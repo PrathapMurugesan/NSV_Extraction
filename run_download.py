@@ -14,6 +14,8 @@ Results still go to settings.OUTPUT (data/bronze/...), exactly as with main.py.
     python run_download.py                     all UPCs below, d1..d4
     python run_download.py d4                  only d4 (any main.py option can be added)
     python run_download.py --root "D:\\other\\data"
+    python run_download.py --all                every UPC folder in the download
+    python run_download.py --upc N/01001/01001/HR N_02017_03001_RJ    these UPCs instead of the list
 
 Logs (everything that was printed): logs/run_download_<timestamp>.log
 Folder mapping used:                logs/run_download_<timestamp>_mapping.csv
@@ -48,9 +50,9 @@ UPCS = [
 
 LOG_DIR = settings.PROJECT_ROOT / "logs"
 
-ZONE = re.compile(r"^zone\s*([A-Za-z])$", re.IGNORECASE)
-PHASE = re.compile(r"^phase\s*(\d+)$", re.IGNORECASE)
-CYCLE = re.compile(r"^cycle\s*(\d+)$", re.IGNORECASE)
+ZONE = re.compile(r"^zone[\s_\-]*([A-Za-z])$", re.IGNORECASE)      # "Zone B", "Zone_B", "Zone-B"
+PHASE = re.compile(r"^phase[\s_\-]*(\d+)$", re.IGNORECASE)
+CYCLE = re.compile(r"^cycle[\s_\-]*(\d+)$", re.IGNORECASE)
 DELIVERABLE = re.compile(r"^deliverable\s*[-_.]?\s*(\d)\b", re.IGNORECASE)
 
 logger = get_logger("nsv.download")
@@ -70,15 +72,16 @@ def upc_key(text):
 
 
 def find_deliverables(root, upcs):
-    """Returns ({virtual folder: real folder}, mapping rows for the csv, UPCs not found)."""
-    wanted = {upc_key(u) for u in upcs}
+    """Returns ({virtual folder: real folder}, mapping rows for the csv, UPCs not found).
+    upcs = None: every UPC folder found."""
+    wanted = None if upcs is None else {upc_key(u) for u in upcs}
     folders, rows, seen = {}, [], set()
     for zone_dir in sorted(p for p in root.iterdir() if p.is_dir() and ZONE.match(p.name)):
         for phase_dir in sorted(p for p in zone_dir.iterdir() if p.is_dir() and PHASE.match(p.name)):
             for cycle_dir in sorted(p for p in phase_dir.iterdir() if p.is_dir() and CYCLE.match(p.name)):
                 for upc_dir in sorted(p for p in cycle_dir.iterdir() if p.is_dir()):
                     upc = upc_key(upc_dir.name)
-                    if upc not in wanted:
+                    if wanted is not None and upc not in wanted:
                         continue
                     zone = ZONE.match(zone_dir.name).group(1).upper()
                     phase = PHASE.match(phase_dir.name).group(1)
@@ -103,7 +106,7 @@ def find_deliverables(root, upcs):
                             continue
                         folders[virtual] = d_dir
                         rows.append([zone, phase, cycle, upc, d, _plain(d_dir), files, "used"])
-    missing = sorted(wanted - seen)
+    missing = [] if wanted is None else sorted(wanted - seen)
     return folders, rows, missing
 
 
@@ -158,6 +161,17 @@ def main(args):
         i = args.index("--root")
         root = args[i + 1]
         args = args[:i] + args[i + 2:]
+    upcs = UPCS
+    if "--all" in args:                              # every UPC folder in the download
+        upcs = None
+        args = [a for a in args if a != "--all"]
+    elif "--upc" in args:                            # these UPCs instead of the list above
+        i = args.index("--upc")
+        j = i + 1
+        while j < len(args) and not args[j].startswith("--"):
+            j += 1
+        upcs = args[i + 1:j]
+        args = args[:i] + args[j:]
     root = Path(root).resolve()
     if sys.platform == "win32" and not str(root).startswith("\\\\?\\"):
         # vendor paths reach 277 characters; without this prefix Windows (LongPathsEnabled = 0)
@@ -172,12 +186,12 @@ def main(args):
     logging.getLogger("nsv").addHandler(handler)    # every nsv.* logger also writes to this file
 
     logger.info(f"download folder: {root}")
-    logger.info(f"UPCs requested ({len(UPCS)}): {UPCS}")
+    logger.info(f"UPCs requested: {'all found' if upcs is None else f'({len(upcs)}) {upcs}'}")
     if not root.is_dir():
         logger.error(f"folder not found: {root}")
         return 1
 
-    folders, rows, missing = find_deliverables(root, UPCS)
+    folders, rows, missing = find_deliverables(root, upcs)
     map_path = LOG_DIR / f"run_download_{stamp}_mapping.csv"
     with open(map_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
