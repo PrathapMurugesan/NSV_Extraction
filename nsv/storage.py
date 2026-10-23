@@ -91,3 +91,12 @@ class S3Storage:
 
     def write_bytes(self, path, data):
         self.s3.put_object(Bucket=self.bucket, Key=self._key(path), Body=data)
+
+    def check(self):
+        """None if the bucket exists and can be reached, otherwise what is wrong (checked before a run)."""
+        try:
+            self.s3.head_bucket(Bucket=self.bucket)
+        except Exception as e:
+            return (f"cannot use bucket '{self.bucket}': {e} - check the name with 'aws s3 ls' "
+                    f"and the machine's IAM permissions")
+        return None

@@ -66,6 +66,10 @@ def main(args):
         logger.info(f"  {survey.label:35} deliverables present: {present}")
     if options.list:
         return 0
+    problem = settings.OUTPUT.check() if hasattr(settings.OUTPUT, "check") else None
+    if problem:
+        logger.error(f"output {settings.OUTPUT.describe()}: {problem}")
+        return 1
 
     # ---- 2. the loop: one survey after another, one deliverable after another ----
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")

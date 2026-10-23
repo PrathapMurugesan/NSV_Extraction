@@ -59,6 +59,8 @@ DELIVERABLES = ["d1", "d2", "d3", "d4"]          # deliverable folder names insi
 # =============================================================================
 CHECK_HEADERS = True             # True = a sheet whose headers differ from its schema CSV is rejected (not saved)
 STOP_IF_WORKBOOK_MISSING = True  # True = if an expected workbook is not found, the deliverable is not extracted
+if os.environ.get("NSV_STOP_IF_WORKBOOK_MISSING", "").lower() in ("0", "false", "no"):
+    STOP_IF_WORKBOOK_MISSING = False   # export NSV_STOP_IF_WORKBOOK_MISSING=0 : extract the workbooks that are there
 EXTRACT_ALL = False              # True = ignore the deliverable config: read every workbook and every sheet,
                                  #        header found automatically, no header check (for a new vendor layout)
 

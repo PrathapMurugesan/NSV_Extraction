@@ -109,7 +109,8 @@ def _find_by_content(key, cfg, names, paths):
         lacking = [s for s in cfg["identify_by_sheets"]
                    if not any(match_score(x, [s], is_file=False) >= settings.FUZZY_THRESHOLD for x in sheets)]
         if lacking:
-            logger.warning(f"[{key}] '{name}' has {cfg['file_keywords']} in its name but not the sheets {lacking}")
+            logger.warning(f"[{key}] '{name}' has {cfg['file_keywords']} in its name but not the sheets {lacking} "
+                           f"- its sheets: {sheets}")
         else:
             accepted.append(name)
 
