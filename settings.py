@@ -4,6 +4,7 @@ settings.py - the ONE file you edit to change how the pipeline behaves.
 What each deliverable contains (workbooks, sheets, header layout) lives in deliverables/d1..d4.py.
 Expected column headers live in schemas/<deliverable>/<workbook>/<sheet>.csv.
 """
+import os
 from pathlib import Path
 
 from nsv.storage import LocalStorage, S3Storage  # noqa: F401  (S3Storage is used when you switch to S3)
@@ -21,6 +22,13 @@ INPUT = LocalStorage(PROJECT_ROOT / "data")
 
 OUTPUT = LocalStorage(PROJECT_ROOT / "data")
 # OUTPUT = S3Storage(bucket="your-nhai-bucket", prefix="", region_name="ap-south-1")
+
+# Or without editing this file:  export NSV_OUTPUT=s3://bucket/prefix   (or a local folder)
+if os.environ.get("NSV_OUTPUT", "").startswith("s3://"):
+    _bucket, _, _prefix = os.environ["NSV_OUTPUT"][len("s3://"):].partition("/")
+    OUTPUT = S3Storage(bucket=_bucket, prefix=_prefix)
+elif os.environ.get("NSV_OUTPUT"):
+    OUTPUT = LocalStorage(Path(os.environ["NSV_OUTPUT"]))
 
 SCHEMAS_DIR = PROJECT_ROOT / "schemas"          # expected headers (part of the code, always local)
 

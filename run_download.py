@@ -14,6 +14,7 @@ Results still go to settings.OUTPUT (data/bronze/...), exactly as with main.py.
     python run_download.py                     all UPCs below, d1..d4
     python run_download.py d4                  only d4 (any main.py option can be added)
     python run_download.py --root "D:\\other\\data"
+    python run_download.py --root s3://bucket/prefix/    read the download straight from S3 (needs boto3)
     python run_download.py --all                every UPC folder in the download
     python run_download.py --upc N/01001/01001/HR N_02017_03001_RJ    these UPCs instead of the list
 
@@ -111,6 +112,74 @@ def find_deliverables(root, upcs):
 
 
 # =============================================================================
+# The same, straight from S3 (nothing is downloaded):  --root s3://bucket/prefix
+# =============================================================================
+def _s3_dirs(s3, bucket, prefix):
+    """Names of the 'folders' directly under prefix (prefix ends with '/')."""
+    names = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix, Delimiter="/"):
+        names += [p["Prefix"][len(prefix):].rstrip("/") for p in page.get("CommonPrefixes", [])]
+    return sorted(n for n in names if n)
+
+
+def _s3_keys(s3, bucket, prefix):
+    """Every object key under prefix, without 'folder' placeholder objects."""
+    keys = []
+    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        keys += [o["Key"] for o in page.get("Contents", []) if not o["Key"].endswith("/")]
+    return keys
+
+
+def find_deliverables_s3(s3, bucket, prefix, upcs):
+    """Like find_deliverables, on S3. Folders map to (real key prefix, [file paths below it])."""
+    wanted = None if upcs is None else {upc_key(u) for u in upcs}
+    folders, rows, seen = {}, [], set()
+    for zone_dir in (n for n in _s3_dirs(s3, bucket, prefix) if ZONE.match(n)):
+        zone_prefix = f"{prefix}{zone_dir}/"
+        for phase_dir in (n for n in _s3_dirs(s3, bucket, zone_prefix) if PHASE.match(n)):
+            phase_prefix = f"{zone_prefix}{phase_dir}/"
+            for cycle_dir in (n for n in _s3_dirs(s3, bucket, phase_prefix) if CYCLE.match(n)):
+                cycle_prefix = f"{phase_prefix}{cycle_dir}/"
+                for upc_dir in _s3_dirs(s3, bucket, cycle_prefix):
+                    upc = upc_key(upc_dir)
+                    if wanted is not None and upc not in wanted:
+                        continue
+                    zone = ZONE.match(zone_dir).group(1).upper()
+                    phase = PHASE.match(phase_dir).group(1)
+                    cycle = CYCLE.match(cycle_dir).group(1)
+                    seen.add(upc)
+                    upc_prefix = f"{cycle_prefix}{upc_dir}/"
+                    logger.info(f"listing s3://{bucket}/{upc_prefix}")
+                    # deliverable folders directly under the UPC or one level down (road-name folder)
+                    by_dir = {}
+                    for key in _s3_keys(s3, bucket, upc_prefix):
+                        parts = key[len(upc_prefix):].split("/")
+                        if len(parts) >= 2 and DELIVERABLE.match(parts[0]):
+                            d_dir, rest = parts[0], parts[1:]
+                        elif len(parts) >= 3 and DELIVERABLE.match(parts[1]):
+                            d_dir, rest = f"{parts[0]}/{parts[1]}", parts[2:]
+                        else:
+                            continue
+                        by_dir.setdefault(d_dir, []).append("/".join(rest))
+                    for d_dir in sorted(by_dir):
+                        d = f"d{DELIVERABLE.match(d_dir.split('/')[-1]).group(1)}"
+                        virtual = settings.RAW_LAYOUT.format(zone=zone, phase=phase, cycle=cycle,
+                                                             upc=upc, deliverable=d)
+                        real = f"{upc_prefix}{d_dir}/"
+                        files = len(by_dir[d_dir])
+                        if virtual in folders:
+                            logger.error(f"{upc} {d}: two folders - using 's3://{bucket}/{folders[virtual][0]}', "
+                                         f"ignoring 's3://{bucket}/{real}'")
+                            rows.append([zone, phase, cycle, upc, d, f"s3://{bucket}/{real}", files,
+                                         "ignored (duplicate)"])
+                            continue
+                        folders[virtual] = (real, sorted(by_dir[d_dir]))
+                        rows.append([zone, phase, cycle, upc, d, f"s3://{bucket}/{real}", files, "used"])
+    missing = [] if wanted is None else sorted(wanted - seen)
+    return folders, rows, missing
+
+
+# =============================================================================
 # Proxy storage: the download, seen in the layout the pipeline expects (read only)
 # =============================================================================
 class DownloadStorage:
@@ -128,6 +197,10 @@ class DownloadStorage:
                 return real / path[len(virtual):].lstrip("/")
         raise FileNotFoundError(f"not in the download mapping: {path}")
 
+    def _files(self, real):
+        """File paths below a real folder, relative to it."""
+        return [f.relative_to(real).as_posix() for f in real.rglob("*") if f.is_file()]
+
     def list_files(self, folder=""):
         folder = folder.strip("/")
         out = []
@@ -135,11 +208,10 @@ class DownloadStorage:
             if folder and not (virtual == folder or virtual.startswith(folder + "/")
                                or folder.startswith(virtual + "/")):
                 continue
-            for f in real.rglob("*"):
-                if f.is_file():
-                    path = f"{virtual}/{f.relative_to(real).as_posix()}"
-                    if not folder or path.startswith(folder + "/"):
-                        out.append(path)
+            for rel in self._files(real):
+                path = f"{virtual}/{rel}"
+                if not folder or path.startswith(folder + "/"):
+                    out.append(path)
         return sorted(out)
 
     def read_bytes(self, path):
@@ -150,6 +222,32 @@ class DownloadStorage:
 
     def write_bytes(self, path, data):
         raise PermissionError("the download folder is read only - results go to settings.OUTPUT")
+
+
+class S3DownloadStorage(DownloadStorage):
+    """The same, on S3: folders map to (real key prefix, [file paths below it]); files are read on demand."""
+    def __init__(self, s3, bucket, prefix, folders):
+        super().__init__(f"s3://{bucket}/{prefix}", folders)
+        self.s3, self.bucket = s3, bucket
+
+    def describe(self):
+        return f"{self.root} (vendor layout via run_download.py)"
+
+    def _files(self, real):
+        return real[1]
+
+    def _real(self, path):
+        path = path.strip("/")
+        for virtual, (real, _) in self.folders.items():
+            if path == virtual or path.startswith(virtual + "/"):
+                return real + path[len(virtual):].lstrip("/")
+        raise FileNotFoundError(f"not in the download mapping: {path}")
+
+    def read_bytes(self, path):
+        return self.s3.get_object(Bucket=self.bucket, Key=self._real(path))["Body"].read()
+
+    def full_path(self, path):
+        return f"s3://{self.bucket}/{self._real(path)}"
 
 
 # =============================================================================
@@ -172,8 +270,13 @@ def main(args):
             j += 1
         upcs = args[i + 1:j]
         args = args[:i] + args[j:]
-    root = Path(root).resolve()
-    if sys.platform == "win32" and not str(root).startswith("\\\\?\\"):
+    on_s3 = str(root).startswith("s3://")
+    if on_s3:
+        bucket, _, prefix = str(root)[len("s3://"):].partition("/")
+        prefix = prefix if prefix.endswith("/") or not prefix else prefix + "/"   # keep any '//' inside
+    else:
+        root = Path(root).resolve()
+    if not on_s3 and sys.platform == "win32" and not str(root).startswith("\\\\?\\"):
         # vendor paths reach 277 characters; without this prefix Windows (LongPathsEnabled = 0)
         # silently hides every file whose path is longer than 260
         root = Path("\\\\?\\" + str(root))
@@ -187,11 +290,15 @@ def main(args):
 
     logger.info(f"download folder: {root}")
     logger.info(f"UPCs requested: {'all found' if upcs is None else f'({len(upcs)}) {upcs}'}")
-    if not root.is_dir():
+    if on_s3:
+        import boto3                                 # only needed for an s3:// root
+        s3 = boto3.client("s3")
+        folders, rows, missing = find_deliverables_s3(s3, bucket, prefix, upcs)
+    elif not root.is_dir():
         logger.error(f"folder not found: {root}")
         return 1
-
-    folders, rows, missing = find_deliverables(root, upcs)
+    else:
+        folders, rows, missing = find_deliverables(root, upcs)
     map_path = LOG_DIR / f"run_download_{stamp}_mapping.csv"
     with open(map_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -205,7 +312,7 @@ def main(args):
         logger.error("nothing to run")
         return 1
 
-    settings.INPUT = DownloadStorage(root, folders)
+    settings.INPUT = S3DownloadStorage(s3, bucket, prefix, folders) if on_s3 else DownloadStorage(root, folders)
 
     import main as pipeline_main                     # after settings.INPUT is replaced
     upcs = sorted({r[3] for r in rows if r[7] == "used"})

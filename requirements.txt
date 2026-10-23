@@ -4,5 +4,4 @@ openpyxl>=3.1
 pyarrow>=14
 Pillow>=9.0          # survey images (EXIF, OCR preparation)
 pytesseract>=0.3     # OCR - ALSO needs the tesseract program installed (see settings.py, section 8)
-# only when settings.py is switched to S3:
-# boto3>=1.28
+boto3>=1.28          # S3 input (run_download.py --root s3://...) / output (NSV_OUTPUT=s3://...)
