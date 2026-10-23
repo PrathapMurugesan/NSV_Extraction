@@ -1,0 +1,213 @@
+"""
+run_download.py - run d1..d4 for a list of UPCs straight from a vendor download folder, without
+copying files and without changing the pipeline.
+
+The download is laid out like this:
+    <RAW_ROOT>/Zone B/Phase 3/Cycle 1/N_02017_03001_RJ/<road name>/Deliverable 4 - NHAI One & .../...
+The pipeline expects (settings.RAW_LAYOUT):
+    nsv/zone=B/phase=3/cycle=1/N-02017-03001-RJ/d4/...
+
+A small proxy storage presents the download in the expected layout ("Deliverable 1. RAMS DATA",
+"Deliverable 4 NHAI One ..." -> d1 / d4, any spelling) and replaces settings.INPUT for this run only.
+Results still go to settings.OUTPUT (data/bronze/...), exactly as with main.py.
+
+    python run_download.py                     all UPCs below, d1..d4
+    python run_download.py d4                  only d4 (any main.py option can be added)
+    python run_download.py --root "D:\\other\\data"
+
+Logs (everything that was printed): logs/run_download_<timestamp>.log
+Folder mapping used:                logs/run_download_<timestamp>_mapping.csv
+Plus, as usual: per-run run.log + manifest in each bronze folder, and the batch summary / report in
+data/bronze/nsv/_batches/.
+"""
+import csv
+import logging
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import settings
+from nsv.log import FORMAT, get_logger
+
+RAW_ROOT = r"C:\Users\Softsensor\Downloads\download\data"
+
+UPCS = [
+    "N/09011/01002/RJ",
+    "N/09009/02001/RJ",
+    "N/04003/12004/RJ",
+    "N/04003/12005/RJ",
+    "N/04003/12006/RJ",
+    "N/08015/02001/RJ",
+    "N/09013/01002/RJ",
+    "N/04037/01001/RJ",
+    "N/06015/01001/RJ",
+    "N/02001/07001/RJ",
+    "N/02017/03001/RJ",
+]
+
+LOG_DIR = settings.PROJECT_ROOT / "logs"
+
+ZONE = re.compile(r"^zone\s*([A-Za-z])$", re.IGNORECASE)
+PHASE = re.compile(r"^phase\s*(\d+)$", re.IGNORECASE)
+CYCLE = re.compile(r"^cycle\s*(\d+)$", re.IGNORECASE)
+DELIVERABLE = re.compile(r"^deliverable\s*[-_.]?\s*(\d)\b", re.IGNORECASE)
+
+logger = get_logger("nsv.download")
+
+
+def _plain(path):
+    """Path for logs / output tables, without the Windows long-path prefix."""
+    return str(path).removeprefix("\\\\?\\")
+
+
+# =============================================================================
+# Find the folders:  (zone, phase, cycle, upc folder, d1..d4) -> real folder
+# =============================================================================
+def upc_key(text):
+    """'N/09011/01002/RJ', 'N_09011_01002_RJ', 'N-09011-01002-RJ' -> 'N-09011-01002-RJ'"""
+    return re.sub(r"[/_\-\s]+", "-", text.strip()).upper()
+
+
+def find_deliverables(root, upcs):
+    """Returns ({virtual folder: real folder}, mapping rows for the csv, UPCs not found)."""
+    wanted = {upc_key(u) for u in upcs}
+    folders, rows, seen = {}, [], set()
+    for zone_dir in sorted(p for p in root.iterdir() if p.is_dir() and ZONE.match(p.name)):
+        for phase_dir in sorted(p for p in zone_dir.iterdir() if p.is_dir() and PHASE.match(p.name)):
+            for cycle_dir in sorted(p for p in phase_dir.iterdir() if p.is_dir() and CYCLE.match(p.name)):
+                for upc_dir in sorted(p for p in cycle_dir.iterdir() if p.is_dir()):
+                    upc = upc_key(upc_dir.name)
+                    if upc not in wanted:
+                        continue
+                    zone = ZONE.match(zone_dir.name).group(1).upper()
+                    phase = PHASE.match(phase_dir.name).group(1)
+                    cycle = CYCLE.match(cycle_dir.name).group(1)
+                    seen.add(upc)
+                    # deliverable folders directly under the UPC or one level down (road-name folder)
+                    candidates = [p for p in upc_dir.iterdir() if p.is_dir()]
+                    candidates += [q for p in candidates if not DELIVERABLE.match(p.name)
+                                   for q in p.iterdir() if q.is_dir()]
+                    for d_dir in sorted(candidates):
+                        m = DELIVERABLE.match(d_dir.name)
+                        if not m:
+                            continue
+                        d = f"d{m.group(1)}"
+                        virtual = settings.RAW_LAYOUT.format(zone=zone, phase=phase, cycle=cycle,
+                                                             upc=upc, deliverable=d)
+                        files = sum(1 for f in d_dir.rglob("*") if f.is_file())
+                        if virtual in folders:
+                            logger.error(f"{upc} {d}: two folders - using '{_plain(folders[virtual])}', "
+                                         f"ignoring '{_plain(d_dir)}'")
+                            rows.append([zone, phase, cycle, upc, d, _plain(d_dir), files, "ignored (duplicate)"])
+                            continue
+                        folders[virtual] = d_dir
+                        rows.append([zone, phase, cycle, upc, d, _plain(d_dir), files, "used"])
+    missing = sorted(wanted - seen)
+    return folders, rows, missing
+
+
+# =============================================================================
+# Proxy storage: the download, seen in the layout the pipeline expects (read only)
+# =============================================================================
+class DownloadStorage:
+    def __init__(self, root, folders):
+        self.root = root
+        self.folders = folders                       # virtual folder -> real folder
+
+    def describe(self):
+        return f"local:{_plain(self.root)} (vendor layout via run_download.py)"
+
+    def _real(self, path):
+        path = path.strip("/")
+        for virtual, real in self.folders.items():
+            if path == virtual or path.startswith(virtual + "/"):
+                return real / path[len(virtual):].lstrip("/")
+        raise FileNotFoundError(f"not in the download mapping: {path}")
+
+    def list_files(self, folder=""):
+        folder = folder.strip("/")
+        out = []
+        for virtual, real in self.folders.items():
+            if folder and not (virtual == folder or virtual.startswith(folder + "/")
+                               or folder.startswith(virtual + "/")):
+                continue
+            for f in real.rglob("*"):
+                if f.is_file():
+                    path = f"{virtual}/{f.relative_to(real).as_posix()}"
+                    if not folder or path.startswith(folder + "/"):
+                        out.append(path)
+        return sorted(out)
+
+    def read_bytes(self, path):
+        return self._real(path).read_bytes()
+
+    def full_path(self, path):
+        return _plain(self._real(path))
+
+    def write_bytes(self, path, data):
+        raise PermissionError("the download folder is read only - results go to settings.OUTPUT")
+
+
+# =============================================================================
+# Run
+# =============================================================================
+def main(args):
+    root = RAW_ROOT
+    if "--root" in args:
+        i = args.index("--root")
+        root = args[i + 1]
+        args = args[:i] + args[i + 2:]
+    root = Path(root).resolve()
+    if sys.platform == "win32" and not str(root).startswith("\\\\?\\"):
+        # vendor paths reach 277 characters; without this prefix Windows (LongPathsEnabled = 0)
+        # silently hides every file whose path is longer than 260
+        root = Path("\\\\?\\" + str(root))
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    LOG_DIR.mkdir(exist_ok=True)
+    log_path = LOG_DIR / f"run_download_{stamp}.log"
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(FORMAT)
+    logging.getLogger("nsv").addHandler(handler)    # every nsv.* logger also writes to this file
+
+    logger.info(f"download folder: {root}")
+    logger.info(f"UPCs requested ({len(UPCS)}): {UPCS}")
+    if not root.is_dir():
+        logger.error(f"folder not found: {root}")
+        return 1
+
+    folders, rows, missing = find_deliverables(root, UPCS)
+    map_path = LOG_DIR / f"run_download_{stamp}_mapping.csv"
+    with open(map_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["zone", "phase", "cycle", "upc", "deliverable", "folder", "files", "status"])
+        w.writerows(rows)
+    for r in rows:
+        logger.info(f"  {r[0]}/{r[1]}/{r[2]}/{r[3]:18} {r[4]}  {r[6]:4} file(s)  {r[7]:8} {r[5]}")
+    for upc in missing:
+        logger.error(f"UPC {upc} not found in {root}")
+    if not folders:
+        logger.error("nothing to run")
+        return 1
+
+    settings.INPUT = DownloadStorage(root, folders)
+
+    import main as pipeline_main                     # after settings.INPUT is replaced
+    upcs = sorted({r[3] for r in rows if r[7] == "used"})
+    code = 1
+    try:
+        code = pipeline_main.main([*args, "--upc", *upcs])
+    except Exception:
+        logger.exception("run_download crashed")
+    logger.info(f"################ done, exit code {code} ################")
+    if missing:
+        logger.error(f"UPC(s) not found in the download: {missing}")
+    logger.info(f"full log:       {log_path}")
+    logger.info(f"folder mapping: {map_path}")
+    handler.close()
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,10 @@
+data/
+!data/.gitkeep
+data/**/*.xlsx
+data/**/*.xlsm
+data/**/*.xls
+data/**/*.csv
+__pycache__/
+*.pyc
+.venv/
+logs/
