@@ -63,6 +63,8 @@ if os.environ.get("NSV_STOP_IF_WORKBOOK_MISSING", "").lower() in ("0", "false", 
     STOP_IF_WORKBOOK_MISSING = False   # export NSV_STOP_IF_WORKBOOK_MISSING=0 : extract the workbooks that are there
 EXTRACT_ALL = False              # True = ignore the deliverable config: read every workbook and every sheet,
                                  #        header found automatically, no header check (for a new vendor layout)
+if os.environ.get("NSV_EXTRACT_ALL", "").lower() in ("1", "true", "yes"):
+    EXTRACT_ALL = True                 # export NSV_EXTRACT_ALL=1 : for one run, e.g. python run_download.py d2 ...
 
 
 # =============================================================================
