@@ -93,7 +93,7 @@ PROFILE_MAX_DISTINCT = 1000      # distinct values are counted up to this number
 import os as _os
 
 OCR_IMAGES = True
-TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"             # e.g. r"C:\Program Files\Tesseract-OCR\tesseract.exe"  (None = found on PATH)
+TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe" if _os.name == "nt" else None   # None = found on PATH (Linux)
 IMAGE_WORKERS = _os.cpu_count() or 1        # CPU cores used in parallel (~0.6 s per image per core)
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
 
