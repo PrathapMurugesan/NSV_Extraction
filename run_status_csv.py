@@ -12,11 +12,14 @@ The CSV has the columns  Zone, Phase, Cycle, UPC code ..., Status, New Structure
     python run_status_csv.py --csv status.csv --root "$SRC" d1 d2                any run_download option
 
 One log per UPC:   logs/status_<timestamp>/<zone>_<phase>_<cycle>_<UPC>.log
-Summary:           logs/status_<timestamp>/summary.csv   (UPC, exit code, log file)
+Summary:           logs/status_<timestamp>/summary.csv   (UPC, status, exit code, log file)
+                   status = extracted / extracted with problems / UPC not found in S3 / error
+With NSV_OUTPUT=s3://bucket/prefix the folder is also copied to s3://bucket/prefix/logs/status_<timestamp>/
 """
 import argparse
 import csv
 import io
+import os
 import re
 import subprocess
 import sys
@@ -75,6 +78,32 @@ def run_one(survey, root, extra, log_dir):
     return code, log_path
 
 
+def status_of(code, log_path):
+    """run_download exit code -> words for the summary."""
+    if code == 0:
+        return "extracted"
+    if code == 2:
+        return "extracted with problems (see log: REJECTED / missing / crashed)"
+    text = Path(log_path).read_text(encoding="utf-8", errors="replace") if log_path else ""
+    if "not found in" in text or "nothing to run" in text:
+        return "UPC not found in S3"
+    return "error (see log)"
+
+
+def upload_logs(log_dir):
+    """Copy the log folder to NSV_OUTPUT/logs/<folder>/ when NSV_OUTPUT is s3://bucket/prefix."""
+    output = os.environ.get("NSV_OUTPUT", "")
+    if not output.startswith("s3://"):
+        return None
+    import boto3
+    bucket, _, prefix = output[len("s3://"):].partition("/")
+    target = f"{prefix.strip('/')}/logs/{log_dir.name}".lstrip("/")
+    s3 = boto3.client("s3")
+    for f in sorted(log_dir.iterdir()):
+        s3.upload_file(str(f), bucket, f"{target}/{f.name}")
+    return f"s3://{bucket}/{target}/"
+
+
 def main(args):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--csv", required=True, help="download status CSV, local path or s3://bucket/key")
@@ -101,17 +130,33 @@ def main(args):
                 code, log_path = job.result()
             except Exception as e:
                 code, log_path = f"crashed: {e}", ""
-            print(f"[{number}/{len(surveys)}] {zone}/{phase}/{cycle} {upc:20} exit code {code}  {log_path}")
-            results.append([zone, phase, cycle, upc, code, log_path])
+            status = status_of(code, log_path)
+            print(f"[{number}/{len(surveys)}] {zone}/{phase}/{cycle} {upc:20} {status}  {log_path}")
+            results.append([zone, phase, cycle, upc, status, code, Path(log_path).name if log_path else ""])
 
     summary = log_dir / "summary.csv"
     with open(summary, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["zone", "phase", "cycle", "upc", "exit_code", "log"])
+        w.writerow(["zone", "phase", "cycle", "upc", "status", "exit_code", "log"])
         w.writerows(sorted(results, key=lambda r: r[:4]))
-    failed = [r for r in results if r[4] != 0]
-    print(f"done: {len(results) - len(failed)} ok (exit 0), {len(failed)} with problems - summary: {summary}")
-    return 0 if not failed else 2
+
+    counts = {}
+    for r in results:
+        counts[r[4]] = counts.get(r[4], 0) + 1
+    print(f"################ {len(results)} UPC(s) ################")
+    for status, n in sorted(counts.items()):
+        print(f"  {n:4}  {status}")
+    for r in sorted(results, key=lambda r: r[:4]):
+        if r[4] != "extracted":
+            print(f"  {r[0]}/{r[1]}/{r[2]} {r[3]:20} {r[4]}")
+    print(f"summary: {summary}")
+    try:
+        where = upload_logs(log_dir)
+        if where:
+            print(f"logs + summary copied to {where}")
+    except Exception as e:
+        print(f"could not copy the logs to S3: {e}")
+    return 0 if counts.get("extracted", 0) == len(results) else 2
 
 
 if __name__ == "__main__":
