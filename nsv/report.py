@@ -72,8 +72,11 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
     for wb_key, wb in manifest.get("workbooks", {}).items():
         wb_base = {**base, "workbook": wb_key, "file": wb.get("file") or ""}
         if wb.get("status") == "missing":
-            rows.append({**wb_base, "status": "WORKBOOK_MISSING", "reason": "expected workbook not found in the folder"})
+            rows.append({**wb_base, "status": "WORKBOOK_MISSING", "reason": "expected workbook not found in the folder"
+                         + (f" - {wb['closest']}" if wb.get("closest") else "")})
             continue
+        if wb.get("identified_by") and wb["identified_by"] != "file name":
+            wb_base["notes"] = f"file recognised by content: {wb['identified_by']}"
         if wb.get("status") == "found" and not wb.get("sheets"):
             rows.append({**wb_base, "status": "not_extracted",
                          "reason": "deliverable stopped: another expected workbook is missing"})
@@ -99,7 +102,8 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
                          (f" (+{len(differ) - 3} more, see schema.json)" if len(differ) > 3 else "")
             rows.append({**wb_base, "sheet": result.get("sheet_name") or sheet_key, "status": status,
                          "rows": result.get("rows", ""), "reason": reason,
-                         "notes": _notes(result) if status.startswith("saved") else ""})
+                         "notes": "; ".join(n for n in (wb_base["notes"], _notes(result) if status.startswith("saved")
+                                                        else "") if n)})
 
     # ---- csv deliverable (D3): one row per file ----
     for relative, entry in manifest.get("csv_files", {}).items():

@@ -4,7 +4,9 @@ matching.py - find the expected workbooks / sheets by name, even when vendors re
 How a name is compared:
   1. exactly the same text as a known name                       -> best possible match
   2. same after normalizing: case, spaces, _ - . (1) v1.0 ignored -> score 1.0
-  3. otherwise a similarity score 0-1; at least FUZZY_THRESHOLD counts as a match
+  3. (files only) one name contains the other: 'Jun-25 Comparison as per CA Kaithal..' holds
+     'Comparison as per CA', 'Defect Report.xlsx' is inside 'Defect Report_DHMS'  -> score CONTAINS_SCORE
+  4. otherwise a similarity score 0-1; at least FUZZY_THRESHOLD counts as a match
 Each found name goes to the expected key it resembles MOST, so 'RIS_...' is never
 claimed by 'lrms' just because the two names look 90 % alike.
 """
@@ -15,6 +17,9 @@ from pathlib import PurePosixPath
 from nsv.log import get_logger
 
 logger = get_logger("nsv.matching")
+
+CONTAINS_SCORE = 0.95       # a file name containing the whole expected name (or the other way round)
+CONTAINS_MIN_LENGTH = 7     # ... only for names of at least 7 letters/digits ('crripci'), so 'report' is not enough
 
 
 def normalize_name(name, is_file=True):
@@ -35,7 +40,15 @@ def match_score(name, aliases, is_file=True):
     if name in aliases:
         return 2.0                                       # identical text beats look-alikes ('Cycle-1' / 'Cycle- 1')
     norm = normalize_name(name, is_file)
-    return max(SequenceMatcher(None, norm, normalize_name(a, is_file)).ratio() for a in aliases)
+    return max(_similarity(norm, normalize_name(a, is_file), is_file) for a in aliases)
+
+
+def _similarity(a, b, is_file):
+    ratio = SequenceMatcher(None, a, b).ratio()
+    short, long_ = sorted((a, b), key=len)
+    if is_file and len(short) >= CONTAINS_MIN_LENGTH and short in long_:
+        return max(ratio, CONTAINS_SCORE)               # vendors add month / road / '_DHMS' around the name
+    return ratio
 
 
 def identify_names(found, expected, threshold, label="workbook", is_file=True, quiet=False):

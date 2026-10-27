@@ -37,7 +37,7 @@ schemas/                expected headers per sheet (csv) = the header check
 nsv/                    the engine
     storage.py          local disk / S3, same 3 methods
     excel.py            read sheets: header detection, merged cells, column ranges, formulas
-    matching.py         find workbooks / sheets by name (exact, normalized, fuzzy)
+    matching.py         find workbooks / sheets by name (exact, normalized, contained, fuzzy)
     headers.py          header matching (exact / normalized / unit / alias) + saved names without units
     checks.py           header check (gate) + empty / defect-column / lane reports
     profiler.py         profile.json

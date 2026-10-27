@@ -45,45 +45,61 @@ def find_workbooks(run, folder, workbooks):
     """
     Returns {workbook key: file path} for the workbooks that were found,
     or None when one is missing and settings.STOP_IF_WORKBOOK_MISSING is on.
-    Only files directly in the folder are considered (not sub-folders); Excel lock files (~$) are ignored.
+    Files directly in the folder come first; files in sub-folders ('d4/Excel/Defect Report.xlsx') are used
+    for workbooks not found at the top. Excel lock files (~$) are ignored.
 
-    1. by file name (exact / normalized / fuzzy, see matching.py)
-    2. if not found by name and the workbook config has "file_keywords" + "identify_by_sheets":
-       a file whose name contains every keyword AND that has every one of those sheets
+    1. by file name (exact / normalized / contained / fuzzy, see matching.py)
+    2. by keywords in the name + sheets inside: config "file_keywords" + "identify_by_sheets"
        (e.g. D2: the name changes per road and month, but always contains 'comparison')
+    3. by the sheets inside only: the one left-over file that has all the configured sheets
+       (a renamed 'NSV Cracks_DHMS.xlsx' still has its 'Cracks' sheet)
+    4. by keywords only: the ONE left-over file whose name has all "file_keywords", even if some sheets
+       differ - those sheets then show as SHEET_MISSING in the summary instead of the whole workbook missing
     """
-    paths = {PurePosixPath(p).name: p for p in _excel_files(folder)}
-    logger.info(f"{len(paths)} Excel file(s) in '{settings.INPUT.describe()}/{folder}': {list(paths)}")
+    top, deeper = {}, {}
+    for p in _excel_files(folder):
+        relative = PurePosixPath(p).relative_to(folder.strip("/")).as_posix()   # 'x.xlsx' or 'Excel/x.xlsx'
+        (top if "/" not in relative else deeper)[relative] = p
+    paths = {**top, **deeper}
+    logger.info(f"{len(top)} Excel file(s) in '{settings.INPUT.describe()}/{folder}': {list(top)}"
+                + (f", {len(deeper)} in sub-folders: {list(deeper)}" if deeper else ""))
 
-    # ---- 1. by file name ----
+    # ---- 1. by file name: top level first, then sub-folders for what is still missing ----
     expected = {key: cfg["file_names"] for key, cfg in workbooks.items()}
-    found, missing, unexpected = identify_names(list(paths), expected, settings.FUZZY_THRESHOLD, "workbook",
+    found, missing, unexpected = identify_names(list(top), expected, settings.FUZZY_THRESHOLD, "workbook",
                                                 quiet=True)
+    if deeper:
+        more, missing, unexpected_deeper = identify_names(list(deeper), {k: expected[k] for k in missing},
+                                                          settings.FUZZY_THRESHOLD, "workbook", quiet=True)
+        found.update(more)
+        unexpected += unexpected_deeper
     how = {key: "file name" for key in found}
 
-    # ---- 2. by keywords in the name + the sheets inside ----
-    for key in list(missing):
-        cfg = workbooks[key]
-        if not (cfg.get("file_keywords") and cfg.get("identify_by_sheets")):
-            continue
-        name = _find_by_content(key, cfg, [n for n in unexpected], paths)
-        if name:
-            found[key] = name
-            how[key] = f"name contains {cfg['file_keywords']} + has sheets {cfg['identify_by_sheets']}"
-            missing.remove(key)
-            unexpected.remove(name)
+    # ---- 2-4. by what is inside the left-over files ----
+    sheet_cache = {}
+    for step in ("keywords_and_sheets", "sheets", "keywords"):
+        for key in list(missing):
+            name, reason = _find_by_content(key, workbooks[key], step, unexpected, paths, sheet_cache)
+            if name:
+                found[key], how[key] = name, reason
+                missing.remove(key)
+                unexpected.remove(name)
 
     # ---- log what is still missing / unexpected ----
+    closest = {}
     for key in missing:
-        logger.error(f"[{key}] no workbook found (expected like '{workbooks[key]['file_names'][0]}'"
-                     + (f", or a name containing {workbooks[key]['file_keywords']} with sheets "
-                        f"{workbooks[key]['identify_by_sheets']})" if workbooks[key].get("file_keywords") else ")"))
+        cfg = workbooks[key]
+        scores = sorted(((match_score(n, cfg["file_names"]), n) for n in unexpected), reverse=True)
+        closest[key] = f"closest file: '{scores[0][1]}' ({scores[0][0]:.2f})" if scores else "no other Excel file"
+        logger.error(f"[{key}] no workbook found (expected like '{cfg['file_names'][0]}'"
+                     + (f", or a name containing {cfg['file_keywords']}" if cfg.get("file_keywords") else "")
+                     + f") - {closest[key]}")
     for name in unexpected:
         logger.warning(f"unexpected workbook, ignored: '{name}'")
 
     for key in workbooks:
         run.manifest["workbooks"][key] = {"file": found.get(key), "status": "found" if key in found else "missing",
-                                          "identified_by": how.get(key), "sheets": {}}
+                                          "identified_by": how.get(key), "closest": closest.get(key), "sheets": {}}
     run.manifest["unexpected_files"] = unexpected
 
     if missing and settings.STOP_IF_WORKBOOK_MISSING:
@@ -93,42 +109,66 @@ def find_workbooks(run, folder, workbooks):
     return {key: paths[name] for key, name in found.items()}
 
 
-def _find_by_content(key, cfg, names, paths):
-    """The one file whose name contains all keywords and that has all identify_by_sheets; None otherwise."""
-    keywords = [normalize_name(k, is_file=False) for k in cfg["file_keywords"]]
-    candidates = [n for n in names if all(k in normalize_name(n) for k in keywords)]
+def _find_by_content(key, cfg, step, names, paths, sheet_cache):
+    """
+    The one file among names that fits this step (see find_workbooks); (None, None) otherwise.
+      keywords_and_sheets  name has all file_keywords + file has all identify_by_sheets
+      sheets               file has all identify_by_sheets, or else all configured (not skipped) sheets
+      keywords             name has all file_keywords (sheets not checked)
+    """
+    keywords = [normalize_name(k, is_file=False) for k in cfg.get("file_keywords", [])]
+    sheets_wanted = cfg.get("identify_by_sheets") or [s["sheet_names"][0] for s in cfg["sheets"].values()
+                                                      if not s.get("skip")]
+    if step != "sheets" and not keywords:
+        return None, None
+    if step == "keywords_and_sheets" and not cfg.get("identify_by_sheets"):
+        return None, None
+
+    candidates = [n for n in names if all(k in normalize_name(n) for k in keywords)] if step != "sheets" else names
     accepted = []
     for name in candidates:
-        try:
-            wb = ExcelWorkbook(name, settings.INPUT.read_bytes(paths[name]))
-            sheets = wb.sheet_names
-            wb.close()
-        except Exception as e:
-            logger.warning(f"[{key}] '{name}' has {cfg['file_keywords']} in its name but cannot be opened: {e}")
+        if step == "keywords":
+            accepted.append(name)
             continue
-        lacking = [s for s in cfg["identify_by_sheets"]
+        sheets = _sheet_names(key, name, paths, sheet_cache)
+        if sheets is None:
+            continue
+        lacking = [s for s in sheets_wanted
                    if not any(match_score(x, [s], is_file=False) >= settings.FUZZY_THRESHOLD for x in sheets)]
-        if lacking:
+        if not lacking:
+            accepted.append(name)
+        elif step == "keywords_and_sheets":
             logger.warning(f"[{key}] '{name}' has {cfg['file_keywords']} in its name but not the sheets {lacking} "
                            f"- its sheets: {sheets}")
-        else:
-            accepted.append(name)
 
+    reason = {"keywords_and_sheets": f"name contains {cfg.get('file_keywords')} + has sheets {sheets_wanted}",
+              "sheets": f"has sheets {sheets_wanted}",
+              "keywords": f"name contains {cfg.get('file_keywords')} (sheets not checked)"}[step]
     if len(accepted) == 1:
-        logger.warning(f"[{key}] workbook '{accepted[0]}' recognised by its name containing "
-                       f"{cfg['file_keywords']} and its sheets {cfg['identify_by_sheets']} (file name not in config)")
-        return accepted[0]
+        logger.warning(f"[{key}] workbook '{accepted[0]}' recognised: {reason} (file name not in config)")
+        return accepted[0], reason
     if len(accepted) > 1:
-        logger.error(f"[{key}] ambiguous - several files have {cfg['file_keywords']} in their name and the "
-                     f"expected sheets: {accepted}")
-    return None
+        logger.error(f"[{key}] ambiguous - several files fit ({reason}): {accepted}")
+    return None, None
+
+
+def _sheet_names(key, name, paths, cache):
+    """Sheet names of a file (opened once per run of find_workbooks); None if it cannot be opened."""
+    if name not in cache:
+        try:
+            wb = ExcelWorkbook(name, settings.INPUT.read_bytes(paths[name]))
+            cache[name] = wb.sheet_names
+            wb.close()
+        except Exception as e:
+            logger.warning(f"[{key}] '{name}' cannot be opened: {e}")
+            cache[name] = None
+    return cache[name]
 
 
 def _excel_files(folder):
     return [p for p in settings.INPUT.list_files(folder)
             if PurePosixPath(p).suffix.lower() in EXCEL_EXTENSIONS
-            and not PurePosixPath(p).name.startswith("~$")
-            and PurePosixPath(p).parent.as_posix() == folder.strip("/")]
+            and not PurePosixPath(p).name.startswith("~$")]
 
 
 # =============================================================================
