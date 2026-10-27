@@ -281,7 +281,7 @@ def main(args):
         # silently hides every file whose path is longer than 260
         root = Path("\\\\?\\" + str(root))
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")     # %f: parallel runs get their own log
     LOG_DIR.mkdir(exist_ok=True)
     log_path = LOG_DIR / f"run_download_{stamp}.log"
     handler = logging.FileHandler(log_path, encoding="utf-8")
