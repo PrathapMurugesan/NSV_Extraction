@@ -211,6 +211,10 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
     entry["unexpected_sheets"] = unexpected
     for key in missing:
         entry["sheets"][key] = {"status": "missing", "expected_names": sheet_cfgs[key]["sheet_names"]}
+        scores = sorted(((match_score(n, sheet_cfgs[key]["sheet_names"], is_file=False), n) for n in unexpected),
+                        reverse=True)
+        if scores:
+            entry["sheets"][key]["closest"] = f"closest sheet in the file: '{scores[0][1]}' ({scores[0][0]:.2f})"
 
     # ---- b-g. every sheet that was found ----
     meta = {"schema": {}, "profile": {}, "formulas": {}, "data_dictionary": {}}
@@ -243,9 +247,10 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
             logger.info(f"[{wb_key}/{sheet_key}] sheet '{sheet_name}' is not in the config - saved as found")
             try:
                 _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, {}, check_nulls, result, meta)
-            except Exception as e:
-                logger.error(f"[{wb_key}/{sheet_key}] could not read sheet '{sheet_name}': {e}")
-                result.update(status="read_error", error=str(e))
+            except Exception as e:      # e.g. an empty or chart-only sheet: not a problem for an extra sheet
+                logger.warning(f"[{wb_key}/{sheet_key}] sheet '{sheet_name}' not in the config and not readable "
+                               f"as a table: {e}")
+                result.update(status="not_readable_not_in_config", error=str(e))
 
     # ---- workbook-level JSONs ----
     for name, content in meta.items():

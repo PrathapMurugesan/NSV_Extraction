@@ -10,6 +10,7 @@ Saved next to the batch summary as  bronze/nsv/_batches/batch=<timestamp>_report
     saved_headers_missing  saved although schema headers are missing (settings.CHECK_HEADERS off) - the
                       columns keep the vendor's headers; reason lists the missing ones
     saved_not_in_config    a sheet / Excel file that is not in the deliverable config, saved as found
+    not_readable_not_in_config  a sheet not in the config that is not a table (empty, chart) - not saved
     saved_cells       report sheet saved cell by cell
     skipped_by_config deliberately not extracted (skip: True)
     REJECTED_HEADERS  headers differ from the schema -> NOT saved (reason lists the missing headers)
@@ -25,6 +26,7 @@ Saved next to the batch summary as  bronze/nsv/_batches/batch=<timestamp>_report
     IMAGES_MISSING    a REQUIRED image folder was not delivered
 Upper-case statuses are the problems to look at.
 """
+import settings
 from nsv.headers import split_unit
 
 PROBLEMS = {"REJECTED_HEADERS", "SHEET_MISSING", "WORKBOOK_MISSING", "READ_ERROR", "CRASHED", "IMAGES_MISSING"}
@@ -94,8 +96,10 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
                 missing = result["header_check"]["missing"]
                 reason = f"{len(missing)} header(s) missing: {missing[:5]}"
             elif status == "SHEET_MISSING":
-                reason = f"no sheet like {result.get('expected_names')}"
-            elif status == "READ_ERROR":
+                reason = f"no sheet like {result.get('expected_names')}" + \
+                         (f" - {result['closest']}" + (" (saved as not in config)" if settings.EXTRACT_UNMATCHED
+                                                       else "") if result.get("closest") else "")
+            elif status in ("READ_ERROR", "not_readable_not_in_config"):
                 reason = result.get("error")
             check = result.get("header_check")
             differ = check.get("different_headers") if isinstance(check, dict) else None

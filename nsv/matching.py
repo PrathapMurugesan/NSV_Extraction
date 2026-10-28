@@ -3,9 +3,10 @@ matching.py - find the expected workbooks / sheets by name, even when vendors re
 
 How a name is compared:
   1. exactly the same text as a known name                       -> best possible match
-  2. same after normalizing: case, spaces, _ - . (1) v1.0 ignored -> score 1.0
-  3. (files only) one name contains the other: 'Jun-25 Comparison as per CA Kaithal..' holds
-     'Comparison as per CA', 'Defect Report.xlsx' is inside 'Defect Report_DHMS'  -> score CONTAINS_SCORE
+  2. same after normalizing: case, spaces, _ - . (1) v1.0, month-year ('Feb-26') ignored -> score 1.0
+  3. one name contains the other: 'Jun-25 Comparison as per CA Kaithal..' holds 'Comparison as per CA',
+     'Defect Report.xlsx' is inside 'Defect Report_DHMS'  -> score CONTAINS_SCORE
+     (several sheets like that: the one with the same name wins, see identify_names)
   4. otherwise a similarity score 0-1; at least FUZZY_THRESHOLD counts as a match
 Each found name goes to the expected key it resembles MOST, so 'RIS_...' is never
 claimed by 'lrms' just because the two names look 90 % alike.
@@ -18,15 +19,20 @@ from nsv.log import get_logger
 
 logger = get_logger("nsv.matching")
 
-CONTAINS_SCORE = 0.95       # a file name containing the whole expected name (or the other way round)
+CONTAINS_SCORE = 0.95       # a name containing the whole expected name (or the other way round)
 CONTAINS_MIN_LENGTH = 7     # ... only for names of at least 7 letters/digits ('crripci'), so 'report' is not enough
+# month + year that vendors put around names: 'Feb-26 Summary', 'Sep-26 Comparison ...', 'Report July 2026'
+MONTH_YEAR = re.compile(r"(?<![a-z])(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s_\-'.]*\d{2,4}(?!\d)")
 
 
 def normalize_name(name, is_file=True):
-    """'LRMS_DataTemplate v1.0 (1).xlsx' -> 'lrmsdatatemplate'   (sheet names: is_file=False)"""
+    """'LRMS_DataTemplate v1.0 (1).xlsx' -> 'lrmsdatatemplate', 'Feb-26 Summary' -> 'summary'
+    (sheet names: is_file=False)"""
     name = (PurePosixPath(name).stem if is_file else str(name)).lower()
     name = re.sub(r"\(\d+\)", "", name)                  # Windows copies: "(1)"
     name = re.sub(r"[ _\-]*v\d+(\.\d+)*", "", name)      # versions: v1.0, _v2, -v1.2.3
+    stripped = MONTH_YEAR.sub("", name)
+    name = stripped if re.search(r"[a-z]", stripped) else name   # a name that is only a month stays as it is
     return re.sub(r"[^a-z0-9]", "", name)                # spaces, _, -, dots, brackets
 
 
@@ -46,8 +52,8 @@ def match_score(name, aliases, is_file=True):
 def _similarity(a, b, is_file):
     ratio = SequenceMatcher(None, a, b).ratio()
     short, long_ = sorted((a, b), key=len)
-    if is_file and len(short) >= CONTAINS_MIN_LENGTH and short in long_:
-        return max(ratio, CONTAINS_SCORE)               # vendors add month / road / '_DHMS' around the name
+    if len(short) >= CONTAINS_MIN_LENGTH and short in long_:
+        return max(ratio, CONTAINS_SCORE)               # vendors add road / '_DHMS' / '@100m' around the name
     return ratio
 
 
@@ -80,7 +86,7 @@ def identify_names(found, expected, threshold, label="workbook", is_file=True, q
                 logger.error(f"[{key}] no {label} found (expected like '{expected[key][0]}')")
         elif len(matches) > 1:
             matches.sort(reverse=True)
-            if matches[0][0] >= 1.0 > matches[1][0]:
+            if matches[0][0] >= 1.0 and matches[0][0] > matches[1][0]:
                 # one has the same name ('Comparison as per CA'), the others only look alike
                 # ('Comparison As per CA @100m') -> the same name wins, the look-alikes are unexpected
                 identified[key] = matches[0][1]
