@@ -44,8 +44,13 @@ WORKBOOKS = {
             # ---- data tables ----
             "comparison_ca":     {"sheet_names": ["Comparison as per CA"], **COMPARISON_HEADER},
             "comparison_irc":    {"sheet_names": ["Comparison as per IRC"], **COMPARISON_HEADER},
-            "sheet_100m":        {"sheet_names": ["100m"], "optional": True},     # only in some templates
-            "sheet_1000m":       {"sheet_names": ["1000m"], "optional": True},
+            # interval sheets, only in some templates: '100m', '2025-100m', '1000m', '1km', '1 Km' all match
+            "sheet_100m":        {"sheet_names": ["100m"], "optional": True},
+            "sheet_1000m":       {"sheet_names": ["1000m", "1km"], "optional": True},
+            # extra sheets some vendors deliver (no schema yet: saved with the vendor's headers)
+            "iri":               {"sheet_names": ["IRI", "IRI-Rut"], "optional": True},
+            "cracks":            {"sheet_names": ["Cracks"], "optional": True},
+            "rut_depth":         {"sheet_names": ["RutDepth", "Rut Depth"], "optional": True},
             "uc_maintenance":    {"sheet_names": ["UC & Maintenance Stretches"]},
             "potholes":          {"sheet_names": ["Potholes & Minor Depressions"],
                                   "columns": "A:G",     # the pothole list; I:M are small count tables ...

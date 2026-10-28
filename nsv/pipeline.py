@@ -24,6 +24,8 @@ Sheet options in WORKBOOKS (deliverables/dN.py):
     header_row, header_rows, info_rows, skip_rows, columns    -> see nsv/excel.py
     cells         also save this column range cell by cell, e.g. "I:M" (side tables next to the main table)
 """
+import re
+from fnmatch import fnmatch
 from pathlib import PurePosixPath
 
 import settings
@@ -32,7 +34,7 @@ from nsv.excel import ExcelWorkbook
 from nsv.headers import final_names, match_headers
 from nsv.formulas import describe_formulas
 from nsv.log import get_logger
-from nsv.matching import classify_path, identify_names, match_score, normalize_name, safe_name
+from nsv.matching import classify_path, identify_names, match_score, name_tags, normalize_name, safe_name
 from nsv.profiler import profile_table
 
 logger = get_logger("nsv.pipeline")
@@ -184,9 +186,17 @@ def _sheet_names(key, name, paths, cache):
 
 
 def _excel_files(folder):
-    return [p for p in settings.INPUT.list_files(folder)
-            if PurePosixPath(p).suffix.lower() in EXCEL_EXTENSIONS
-            and not PurePosixPath(p).name.startswith("~$")]
+    """Excel files below the folder, without lock files (~$) and files in settings.IGNORE_FILES."""
+    files = []
+    for p in settings.INPUT.list_files(folder):
+        name = PurePosixPath(p).name
+        if PurePosixPath(p).suffix.lower() not in EXCEL_EXTENSIONS or name.startswith("~$"):
+            continue
+        if any(fnmatch(name.lower(), pattern.lower()) for pattern in settings.IGNORE_FILES):
+            logger.info(f"ignored (settings.IGNORE_FILES): '{name}'")
+            continue
+        files.append(p)
+    return files
 
 
 # =============================================================================
@@ -221,51 +231,27 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
         return
     entry["sheet_names_in_file"] = wb.sheet_names
 
-    # ---- a. find the configured sheets by name ----
+    # ---- a. which sheet is which (configured, variants, not in the config) ----
     sheet_cfgs = config["sheets"]
-    expected = {key: cfg["sheet_names"] for key, cfg in sheet_cfgs.items()}
-    found, missing, unexpected = identify_names(wb.sheet_names, expected, settings.FUZZY_THRESHOLD,
-                                                label=f"sheet in '{wb.file_name}'", is_file=False, quiet=True)
-    entry["unexpected_sheets"] = list(unexpected)
+    to_read, extras = _resolve_sheets(wb, wb_key, sheet_cfgs, entry)
+    if extras and not settings.EXTRACT_UNMATCHED:
+        logger.warning(f"[{wb_key}] sheet(s) not in the config, ignored: {extras}")
+        extras = []
 
-    # ---- a2. a configured sheet not found, but several sheets look like it ('Rigid - Comparison as per CA' and
-    #          'Flexible - Comparison as per CA'): each is extracted with that sheet's settings ----
-    to_read = [(key, key, name) for key, name in found.items()]           # (result key, config key, sheet)
-    for key in list(missing):
-        alike = [n for n in unexpected
-                 if match_score(n, sheet_cfgs[key]["sheet_names"], is_file=False) >= settings.FUZZY_THRESHOLD]
-        if len(alike) > 1 and not sheet_cfgs[key].get("skip"):
-            logger.warning(f"[{wb_key}/{key}] several sheets like '{sheet_cfgs[key]['sheet_names'][0]}': {alike} "
-                           f"- each is extracted with its settings")
-            missing.remove(key)
-            entry["sheets"][key] = {"status": "split_into_variants", "variants": alike}
-            for name in alike:
-                unexpected.remove(name)
-                to_read.append((f"{key}__{safe_name(name)}", key, name))
-
-    for key in missing:
-        optional = sheet_cfgs[key].get("optional")
-        entry["sheets"][key] = {"status": "optional_missing" if optional else "missing",
-                                "expected_names": sheet_cfgs[key]["sheet_names"]}
-        scores = sorted(((match_score(n, sheet_cfgs[key]["sheet_names"], is_file=False), n) for n in unexpected),
-                        reverse=True)
-        if scores:
-            entry["sheets"][key]["closest"] = f"closest sheet in the file: '{scores[0][1]}' ({scores[0][0]:.2f})"
-        (logger.info if optional else logger.error)(
-            f"[{wb_key}/{key}] {'optional ' if optional else ''}sheet not in '{wb.file_name}' (expected like "
-            f"'{sheet_cfgs[key]['sheet_names'][0]}')" + (f" - {entry['sheets'][key]['closest']}" if scores else ""))
-
-    # ---- b-g. every sheet that was found ----
+    # ---- b-g. read, check and save every sheet ----
     meta = {"schema": {}, "profile": {}, "formulas": {}, "data_dictionary": {}}
     schema_wb = config.get("schema_workbook", wb_key)          # a variant file uses its workbook's schemas
-    for sheet_key, cfg_key, sheet_name in to_read:
-        options = {**sheet_cfgs[cfg_key], "schema": f"{schema_wb}/{cfg_key}"}
+    for sheet_key, cfg_key, sheet_name in to_read + [(f"extra_{safe_name(n)}", None, n) for n in extras]:
         label = f"{wb_key}/{sheet_key}"
-        result = {"sheet_name": sheet_name}
-        if sheet_key != cfg_key:
-            result["variant_of"] = cfg_key
+        result = {"sheet_name": sheet_name, **name_tags(sheet_name)}      # + interval_m / period from the name
         entry["sheets"][sheet_key] = result
-
+        if cfg_key is None:                                   # not in the config: header found automatically
+            options, result["not_in_config"] = {}, True
+            logger.info(f"[{label}] sheet '{sheet_name}' is not in the config - saved as found")
+        else:
+            options = {**sheet_cfgs[cfg_key], "schema": f"{schema_wb}/{cfg_key}"}
+            if sheet_key != cfg_key:
+                result["variant_of"] = cfg_key
         if options.get("skip"):
             logger.info(f"[{label}] skipped (configured skip: True)")
             result["status"] = "skipped_by_config"
@@ -277,24 +263,12 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
             else:
                 _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, options, check_nulls, result, meta)
         except Exception as e:
-            logger.error(f"[{label}] could not read sheet '{sheet_name}': {e}")
-            result.update(status="read_error", error=str(e))
-
-    # ---- sheets that are not in the config: saved too, header found automatically ----
-    if unexpected and not settings.EXTRACT_UNMATCHED:
-        logger.warning(f"[{wb_key}] sheet(s) not in the config, ignored: {unexpected}")
-    if settings.EXTRACT_UNMATCHED:
-        for sheet_name in unexpected:
-            sheet_key = f"extra_{safe_name(sheet_name)}"
-            result = {"sheet_name": sheet_name, "not_in_config": True}
-            entry["sheets"][sheet_key] = result
-            logger.info(f"[{wb_key}/{sheet_key}] sheet '{sheet_name}' is not in the config - saved as found")
-            try:
-                _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, {}, check_nulls, result, meta)
-            except Exception as e:      # e.g. an empty or chart-only sheet: not a problem for an extra sheet
-                logger.warning(f"[{wb_key}/{sheet_key}] sheet '{sheet_name}' not in the config and not readable "
-                               f"as a table: {e}")
+            if cfg_key is None:          # e.g. an empty or chart-only sheet: not a problem for an extra sheet
+                logger.warning(f"[{label}] sheet '{sheet_name}' not in the config and not a table: {e}")
                 result.update(status="not_readable_not_in_config", error=str(e))
+            else:
+                logger.error(f"[{label}] could not read sheet '{sheet_name}': {e}")
+                result.update(status="read_error", error=str(e))
 
     # ---- workbook-level JSONs ----
     for name, content in meta.items():
@@ -302,6 +276,58 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
             entry.setdefault("meta_files", []).append(run.save_json(content, wb_key, name))
     entry["status"] = "extracted"
     wb.close()
+
+
+def _resolve_sheets(wb, wb_key, sheet_cfgs, entry):
+    """
+    Decide which sheet of the file is which configured sheet. Returns (to_read, extras):
+      to_read  [(result key, config key, sheet name)]   read with that config key's settings + schema
+      extras   [sheet names not in the config]           saved as found (settings.EXTRACT_UNMATCHED)
+    Rules, in order:
+      1. by name (exact / normalized / contained / fuzzy, '1km' = '1000m' - see matching.py)
+      2. several sheets look like ONE configured sheet ('Rigid - Comparison as per CA' + 'Flexible - ...'):
+         each is read with that sheet's settings, as '<key>__<sheet name>'
+      3. one required sheet missing and ONE sheet left over named 'Sheet1' (or the only sheet): that sheet is it
+      4. still missing: 'missing' (an error) or 'optional_missing' (config "optional": True)
+    """
+    names = {key: cfg["sheet_names"] for key, cfg in sheet_cfgs.items()}
+    found, missing, extras = identify_names(wb.sheet_names, names, settings.FUZZY_THRESHOLD,
+                                            label=f"sheet in '{wb.file_name}'", is_file=False, quiet=True)
+    entry["unexpected_sheets"] = list(extras)
+    to_read = [(key, key, name) for key, name in found.items()]
+
+    # ---- 2. several sheets like one configured sheet ----
+    for key in list(missing):
+        alike = [n for n in extras if match_score(n, names[key], is_file=False) >= settings.FUZZY_THRESHOLD]
+        if len(alike) > 1 and not sheet_cfgs[key].get("skip"):
+            logger.warning(f"[{wb_key}/{key}] several sheets like '{names[key][0]}': {alike} - each read with its settings")
+            missing.remove(key)
+            entry["sheets"][key] = {"status": "split_into_variants", "variants": alike}
+            for name in alike:
+                extras.remove(name)
+                to_read.append((f"{key}__{safe_name(name)}", key, name))
+
+    # ---- 3. one required sheet missing, one sheet left with a default name ('Sheet1') or the file has one
+    #         sheet only: that is the one (a real name like 'IRI' is never taken for another sheet) ----
+    required = [k for k in missing if not sheet_cfgs[k].get("optional") and not sheet_cfgs[k].get("skip")]
+    if len(required) == 1 and len(extras) == 1 and (len(wb.sheet_names) == 1
+                                                     or re.fullmatch(r"sheet\s*\d*", extras[0].strip().lower())):
+        key, name = required[0], extras.pop()
+        logger.warning(f"[{wb_key}/{key}] '{names[key][0]}' not found by name - the only other sheet '{name}' is used")
+        missing.remove(key)
+        to_read.append((key, key, name))
+
+    # ---- 4. still missing ----
+    for key in missing:
+        optional = sheet_cfgs[key].get("optional") or sheet_cfgs[key].get("skip")   # a help sheet is never needed
+        entry["sheets"][key] = {"status": "optional_missing" if optional else "missing", "expected_names": names[key]}
+        scores = sorted(((match_score(n, names[key], is_file=False), n) for n in extras), reverse=True)
+        if scores:
+            entry["sheets"][key]["closest"] = f"closest sheet in the file: '{scores[0][1]}' ({scores[0][0]:.2f})"
+        (logger.info if optional else logger.error)(
+            f"[{wb_key}/{key}] {'optional ' if optional else ''}sheet not in '{wb.file_name}' (expected like "
+            f"'{names[key][0]}')" + (f" - {entry['sheets'][key]['closest']}" if scores else ""))
+    return to_read, extras
 
 
 def _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, options, check_nulls, result, meta):

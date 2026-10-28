@@ -61,6 +61,7 @@ CHECK_HEADERS = True             # True = a sheet whose headers differ from its 
 if os.environ.get("NSV_CHECK_HEADERS", "").lower() in ("0", "false", "no"):
     CHECK_HEADERS = False              # export NSV_CHECK_HEADERS=0 : saved anyway, with the vendor's headers;
                                        # the missing ones are listed in the report (saved_headers_missing)
+IGNORE_FILES = ["failed_files*.xlsx"]   # vendor tool output, not survey data (file name patterns, * = anything)
 EXTRACT_UNMATCHED = True         # True = sheets / Excel files that are not in the deliverable config are saved too
                                  #        (header found automatically; report status saved_not_in_config)
 if os.environ.get("NSV_EXTRACT_UNMATCHED", "").lower() in ("0", "false", "no"):

@@ -4,7 +4,7 @@ Start Chainage,B,number,
 End Chainage,C,number,
 Length in m,D,number,
 Structure Details,E,text,
-Remark,F,text,
+Remark,F,text,Remarks
 Limitation of BI as per Concession Agreement (in mm/km),G,number,
 L2 Lane Roughness BI (in m/km),H,number,
 L1 Lane Roughness BI (in mm/km),I,number,

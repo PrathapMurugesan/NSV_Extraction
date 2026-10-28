@@ -23,15 +23,42 @@ CONTAINS_SCORE = 0.95       # a name containing the whole expected name (or the 
 CONTAINS_MIN_LENGTH = 7     # ... only for names of at least 7 letters/digits ('crripci'), so 'report' is not enough
 # month + year that vendors put around names: 'Feb-26 Summary', 'Sep-26 Comparison ...', 'Report July 2026'
 MONTH_YEAR = re.compile(r"(?<![a-z])(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s_\-'.]*\d{2,4}(?!\d)")
+YEAR = re.compile(r"(?<!\d)(19|20)\d{2}(?!\d)")                                   # '2025-100m'
+# survey interval in a sheet name: '100m', '100 mtr', '1km', '1 km', '@100' (no unit = metres)
+INTERVAL = re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*(km|kms|m|mtr|mtrs|meters?|metres?)(?![a-z])"
+                      r"|@\s*(\d+)(?![\d.]|\s*[a-z])")
+
+
+def interval_m(name):
+    """Survey interval named in a sheet name, in metres: '1km' -> 1000, 'CA@100m' -> 100, 'Summary' -> None."""
+    m = INTERVAL.search(str(name).lower())
+    if not m:
+        return None
+    if m.group(3):
+        return int(m.group(3))
+    value = float(m.group(1)) * (1000 if m.group(2).startswith("km") else 1)
+    return int(value) if value == int(value) else value
+
+
+def name_tags(name):
+    """What a sheet name tells about its data: {'interval_m': 100, 'period': 'Aug-25'} (only what is there)."""
+    tags = {"interval_m": interval_m(name)}
+    period = MONTH_YEAR.search(str(name).lower())
+    if period:
+        tags["period"] = str(name)[period.start():period.end()]
+    return {k: v for k, v in tags.items() if v is not None}
 
 
 def normalize_name(name, is_file=True):
     """'LRMS_DataTemplate v1.0 (1).xlsx' -> 'lrmsdatatemplate', 'Feb-26 Summary' -> 'summary'
-    (sheet names: is_file=False)"""
+    sheet names (is_file=False) also: '1km' -> '1000m', '2025-100m' -> '100m'"""
     name = (PurePosixPath(name).stem if is_file else str(name)).lower()
     name = re.sub(r"\(\d+\)", "", name)                  # Windows copies: "(1)"
     name = re.sub(r"[ _\-]*v\d+(\.\d+)*", "", name)      # versions: v1.0, _v2, -v1.2.3
     stripped = MONTH_YEAR.sub("", name)
+    if not is_file:
+        stripped = YEAR.sub("", stripped)                                 # '2025-100m' -> '-100m'
+        stripped = INTERVAL.sub(lambda m: f" {interval_m(m.group(0))}m ", stripped)   # '1km' -> '1000m'
     name = stripped if re.search(r"[a-z]", stripped) else name   # a name that is only a month stays as it is
     return re.sub(r"[^a-z0-9]", "", name)                # spaces, _, -, dots, brackets
 

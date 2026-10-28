@@ -84,8 +84,8 @@ def finished(log_path):
 def run_one(survey, root, extra, log_dir, image_workers):
     zone, phase, cycle, upc = survey
     log_path = log_dir / log_name(survey)
-    command = [sys.executable, str(PROJECT_ROOT / "run_download.py"), "--root", root,
-               "--upc", upc, "--zone", zone, "--phase", phase, "--cycle", cycle, *extra]
+    command = [sys.executable, str(PROJECT_ROOT / "run_download.py"), *extra, "--root", root,
+               "--upc", upc, "--zone", zone, "--phase", phase, "--cycle", cycle]
     env = {**os.environ, "NSV_IMAGE_WORKERS": os.environ.get("NSV_IMAGE_WORKERS", str(image_workers))}
     with open(log_path, "w", encoding="utf-8") as log:
         code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT, env=env).returncode
@@ -93,12 +93,13 @@ def run_one(survey, root, extra, log_dir, image_workers):
 
 
 def status_of(code, log_path):
-    """run_download exit code -> words for the summary."""
-    if code == 0:
-        return "extracted"
-    if code == 2:
-        return "extracted with problems (see log: REJECTED / missing / crashed)"
+    """run_download exit code (+ its log) -> words for the summary."""
     text = Path(log_path).read_text(encoding="utf-8", errors="replace") if log_path else ""
+    moved = " - found under another zone/phase/cycle than in the CSV" if "--use-found: extracting" in text else ""
+    if code == 0:
+        return "extracted" + moved
+    if code == 2:
+        return "extracted with problems (see log: REJECTED / missing / crashed)" + moved
     if "is in the download only under" in text:
         return "UPC in S3 under another zone/phase/cycle than in the CSV (see log)"
     if "not found in" in text or "nothing to run" in text:
@@ -127,7 +128,12 @@ def main(args):
     parser.add_argument("--parallel", type=int, default=3, help="UPCs at the same time (default 3)")
     parser.add_argument("--list", action="store_true", help="only show the UPCs, run nothing")
     parser.add_argument("--resume", help="earlier log folder (logs/status_...): skip the UPCs that finished there")
+    parser.add_argument("--strict-location", action="store_true",
+                        help="a UPC in S3 under another zone/phase/cycle than in the CSV is NOT extracted "
+                             "(default: it is extracted where it is, and the summary says so)")
     o, extra = parser.parse_known_args(args)
+    if not o.strict_location:
+        extra = [*extra, "--use-found"]
 
     surveys = surveys_from_csv(o.csv)
     print(f"{len(surveys)} UPC(s) with New Structure = 1 in {o.csv}")

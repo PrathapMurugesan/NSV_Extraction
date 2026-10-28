@@ -1,8 +1,8 @@
 header,excel_column,aliases
 NHNumber,,
 SectionCode,,
-Chainage (Start),,
-Chainage (End),,
+Chainage (Start),,StartChainage
+Chainage (End),,EndChainage
 Direction,,
 Structure Type,,
 SurveyDate,,

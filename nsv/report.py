@@ -32,8 +32,8 @@ import settings
 from nsv.headers import split_unit
 
 PROBLEMS = {"REJECTED_HEADERS", "SHEET_MISSING", "WORKBOOK_MISSING", "READ_ERROR", "CRASHED", "IMAGES_MISSING"}
-COLUMNS = ["zone", "phase", "cycle", "upc", "deliverable", "workbook", "file", "sheet", "status",
-           "rows", "reason", "notes", "run_folder"]
+COLUMNS = ["zone", "phase", "cycle", "upc", "deliverable", "workbook", "file", "sheet", "interval_m", "period",
+           "status", "rows", "reason", "notes", "run_folder"]   # interval_m / period: read from the sheet name
 
 _STATUS = {"rejected_headers": "REJECTED_HEADERS", "missing": "SHEET_MISSING", "read_error": "READ_ERROR"}
 
@@ -129,6 +129,7 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
                 reason = "; ".join(f"expected '{e}', got '{g}'" for e, g in list(differ.items())[:3]) + \
                          (f" (+{len(differ) - 3} more, see schema.json)" if len(differ) > 3 else "")
             rows.append({**wb_base, "sheet": result.get("sheet_name") or sheet_key, "status": status,
+                         "interval_m": result.get("interval_m", ""), "period": result.get("period", ""),
                          "rows": result.get("rows", ""), "reason": reason,
                          "notes": "; ".join(n for n in (wb_base["notes"],
                                                         f"one of several sheets for '{result['variant_of']}'"

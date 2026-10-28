@@ -17,6 +17,8 @@ Results still go to settings.OUTPUT (data/bronze/...), exactly as with main.py.
     python run_download.py --root s3://bucket/prefix/    read the download straight from S3 (needs boto3)
     python run_download.py --all                every UPC folder in the download
     python run_download.py --upc N/01001/01001/HR N_02017_03001_RJ    these UPCs instead of the list
+    python run_download.py --upc N_02008_04001_MP --zone C --phase 3 --cycle 1 --use-found
+                                                when the UPC is only under another zone/phase/cycle: extract it there
 
 Logs (everything that was printed): logs/run_download_<timestamp>.log
 Folder mapping used:                logs/run_download_<timestamp>_mapping.csv
@@ -253,13 +255,39 @@ class S3DownloadStorage(DownloadStorage):
 # =============================================================================
 # Run
 # =============================================================================
+def _check_location(rows, args, use_found):
+    """
+    A UPC that is in the download only under another zone/phase/cycle than requested (--zone/--phase/--cycle,
+    e.g. from the status CSV) would find nothing. Logged as an error; with --use-found the filters are
+    dropped, so the UPC is extracted where it is. Returns the (possibly changed) arguments.
+    """
+    wanted = {name: _option(args, f"--{name}") for name in ("zone", "phase", "cycle")}
+    elsewhere = []
+    for upc in sorted({r[3] for r in rows if r[7] == "used"}):
+        places = sorted({(r[0], r[1], r[2]) for r in rows if r[3] == upc and r[7] == "used"})
+        if not any(all(not wanted[n] or str(v) in wanted[n] for n, v in zip(("zone", "phase", "cycle"), p))
+                   for p in places):
+            elsewhere.append(upc)
+            logger.error(f"UPC {upc} is in the download only under {['/'.join(p) for p in places]} (zone/phase/cycle)"
+                         f" - not under the requested {'/'.join(','.join(v) if v else '*' for v in wanted.values())}"
+                         f" - check the zone / phase / cycle in the status list")
+    if elsewhere and use_found:
+        logger.warning(f"--use-found: extracting {elsewhere} where they are in the download "
+                       f"(zone / phase / cycle filters dropped)")
+        for name in ("--zone", "--phase", "--cycle"):
+            if name in args:
+                i = args.index(name)
+                args = args[:i] + args[i + 1 + len(_option(args, name)):]
+    return args
+
+
 def _option(args, name):
-    """Values after an option: ['--phase', '1', '2', 'd1'] -> ['1', '2', 'd1'] up to the next '--...'."""
+    """Values after an option: ['--phase', '1', '2', 'd1'] -> ['1', '2'] (up to the next option / deliverable)."""
     if name not in args:
         return []
     values = []
     for a in args[args.index(name) + 1:]:
-        if a.startswith("--"):
+        if a.startswith("--") or re.fullmatch(r"d\d", a):
             break
         values.append(a)
     return values
@@ -271,6 +299,8 @@ def main(args):
         i = args.index("--root")
         root = args[i + 1]
         args = args[:i] + args[i + 2:]
+    use_found = "--use-found" in args                # UPC under another zone/phase/cycle: extract it there
+    args = [a for a in args if a != "--use-found"]
     upcs = UPCS
     if "--all" in args:                              # every UPC folder in the download
         upcs = None
@@ -320,14 +350,7 @@ def main(args):
         logger.info(f"  {r[0]}/{r[1]}/{r[2]}/{r[3]:18} {r[4]}  {r[6]:4} file(s)  {r[7]:8} {r[5]}")
     for upc in missing:
         logger.error(f"UPC {upc} not found in {root}")
-    wanted = {name: _option(args, f"--{name}") for name in ("zone", "phase", "cycle")}
-    for upc in sorted({r[3] for r in rows if r[7] == "used"}):
-        places = sorted({(r[0], r[1], r[2]) for r in rows if r[3] == upc and r[7] == "used"})
-        if not any(all(not wanted[n] or str(v) in wanted[n] for n, v in zip(("zone", "phase", "cycle"), p))
-                   for p in places):
-            logger.error(f"UPC {upc} is in the download only under {['/'.join(p) for p in places]} (zone/phase/cycle)"
-                         f" - not under the requested {'/'.join(','.join(v) if v else '*' for v in wanted.values())}"
-                         f" - check the zone / phase / cycle in the status list")
+    args = _check_location(rows, args, use_found)
     if not folders:
         logger.error("nothing to run")
         return 1
