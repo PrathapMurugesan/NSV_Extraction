@@ -10,6 +10,8 @@ The CSV has the columns  Zone, Phase, Cycle, UPC code ..., Status, New Structure
     python run_status_csv.py --csv status.csv --root "$SRC" --parallel 2         2 at a time
     python run_status_csv.py --csv status.csv --root "$SRC" --list               only show the UPCs
     python run_status_csv.py --csv status.csv --root "$SRC" d1 d2                any run_download option
+    python run_status_csv.py --csv status.csv --root "$SRC" --resume logs/status_20261027_073821
+                                        skip the UPCs that finished in that earlier run (stopped ones run again)
 
 One log per UPC:   logs/status_<timestamp>/<zone>_<phase>_<cycle>_<UPC>.log
 Summary:           logs/status_<timestamp>/summary.csv   (UPC, status, exit code, log file)
@@ -68,13 +70,25 @@ def surveys_from_csv(path):
     return out
 
 
-def run_one(survey, root, extra, log_dir):
+def log_name(survey):
     zone, phase, cycle, upc = survey
-    log_path = log_dir / f"{zone}_{phase}_{cycle}_{upc.replace('/', '_')}.log"
+    return f"{zone}_{phase}_{cycle}_{upc.replace('/', '_')}.log"
+
+
+def finished(log_path):
+    """True when an earlier run of this UPC ran to its end (not stopped / killed half way)."""
+    text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.is_file() else ""
+    return "done, exit code" in text or "nothing to run" in text
+
+
+def run_one(survey, root, extra, log_dir, image_workers):
+    zone, phase, cycle, upc = survey
+    log_path = log_dir / log_name(survey)
     command = [sys.executable, str(PROJECT_ROOT / "run_download.py"), "--root", root,
                "--upc", upc, "--zone", zone, "--phase", phase, "--cycle", cycle, *extra]
+    env = {**os.environ, "NSV_IMAGE_WORKERS": os.environ.get("NSV_IMAGE_WORKERS", str(image_workers))}
     with open(log_path, "w", encoding="utf-8") as log:
-        code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT).returncode
+        code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT, env=env).returncode
     return code, log_path
 
 
@@ -110,10 +124,15 @@ def main(args):
     parser.add_argument("--root", required=True, help="download root, local folder or s3://bucket/prefix/")
     parser.add_argument("--parallel", type=int, default=3, help="UPCs at the same time (default 3)")
     parser.add_argument("--list", action="store_true", help="only show the UPCs, run nothing")
+    parser.add_argument("--resume", help="earlier log folder (logs/status_...): skip the UPCs that finished there")
     o, extra = parser.parse_known_args(args)
 
     surveys = surveys_from_csv(o.csv)
     print(f"{len(surveys)} UPC(s) with New Structure = 1 in {o.csv}")
+    if o.resume:
+        done = [s for s in surveys if finished(Path(o.resume) / log_name(s))]
+        surveys = [s for s in surveys if s not in done]
+        print(f"--resume {o.resume}: {len(done)} already finished there, skipped - {len(surveys)} to run")
     for zone, phase, cycle, upc in surveys:
         print(f"  zone {zone}  phase {phase}  cycle {cycle}  {upc}")
     if o.list or not surveys:
@@ -122,8 +141,11 @@ def main(args):
     log_dir = PROJECT_ROOT / "logs" / f"status_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     log_dir.mkdir(parents=True, exist_ok=True)
     results = []
-    with ThreadPoolExecutor(max_workers=max(1, o.parallel)) as pool:
-        jobs = {pool.submit(run_one, s, o.root, extra, log_dir): s for s in surveys}
+    parallel = max(1, o.parallel)
+    image_workers = max(1, (os.cpu_count() or 1) // parallel)       # the cores are shared by the parallel UPCs
+    print(f"{parallel} UPC(s) at a time, {image_workers} image worker(s) each")
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        jobs = {pool.submit(run_one, s, o.root, extra, log_dir, image_workers): s for s in surveys}
         for number, job in enumerate(as_completed(jobs), start=1):
             zone, phase, cycle, upc = jobs[job]
             try:

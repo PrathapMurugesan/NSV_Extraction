@@ -107,6 +107,10 @@ import os as _os
 OCR_IMAGES = True
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe" if _os.name == "nt" else None   # None = found on PATH (Linux)
 IMAGE_WORKERS = _os.cpu_count() or 1        # CPU cores used in parallel (~0.6 s per image per core)
+if _os.environ.get("NSV_IMAGE_WORKERS"):    # export NSV_IMAGE_WORKERS=40 (run_status_csv.py sets it per UPC)
+    IMAGE_WORKERS = int(_os.environ["NSV_IMAGE_WORKERS"])
+# one thread per tesseract: with many workers, tesseract's own threads make OCR many times slower
+_os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp")
 
 # Where the text is, as a fraction of the image height: (name, from, to). Add e.g. ("bottom", 0.9, 1.0)

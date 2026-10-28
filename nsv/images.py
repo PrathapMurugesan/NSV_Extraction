@@ -29,7 +29,7 @@ import hashlib
 import io
 import os
 import re
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime
 
 from PIL import ExifTags, Image, ImageOps
@@ -240,7 +240,8 @@ def read_images(paths, make_job, workers, batch=400, progress=None):
     pool = ProcessPoolExecutor(max_workers=workers) if workers > 1 and len(paths) >= 4 else None
     try:
         for start in range(0, len(paths), batch):
-            jobs = [make_job(p) for p in paths[start:start + batch]]
+            with ThreadPoolExecutor(max_workers=32) as downloads:    # file reads (S3) in parallel too
+                jobs = list(downloads.map(make_job, paths[start:start + batch]))
             rows += list(pool.map(read_image, jobs, chunksize=8)) if pool else [read_image(j) for j in jobs]
             if progress:
                 progress(len(rows), len(paths))
