@@ -442,7 +442,7 @@ def extract_image_folders(run, folder, image_folders, files=None, location=None)
         logger.error("OCR is not available (tesseract not found) - images are listed, but the text on them "
                      "is not read. Install tesseract and set settings.TESSERACT_CMD.")
     cfg = {"ocr": ocr, "tesseract_cmd": settings.TESSERACT_CMD, "regions": settings.IMAGE_TEXT_REGIONS,
-           "fields": settings.IMAGE_FIELDS}
+           "fields": settings.IMAGE_FIELDS, "ocr_mode": settings.IMAGE_OCR}
     lanes, offsets = _image_location_tables(files, location) if by_folder else ({}, {})
     if offsets:
         run.manifest["image_chainage_offsets"] = offsets

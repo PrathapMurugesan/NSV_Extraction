@@ -5,6 +5,8 @@ Per image, in this order:
   1. file facts     file name, full path, lane (from a folder named L1..L4 / R1..R4), size
   2. EXIF           camera date/time, GPS, make/model - only if the vendor embedded it (instant)
   3. OCR            the text printed on the image (e.g. the blue banner of LCMS images)
+                    - only when EXIF has no usable GPS lat/long (settings.IMAGE_OCR = "when_no_gps");
+                      "always" reads every image
                     - only the regions in settings.IMAGE_TEXT_REGIONS (default: top banner)
                     - read by LABEL, not position: the text is split into fields where there is a gap
                       between columns, and every 'Label: value' becomes a field. A vendor with another
@@ -78,6 +80,16 @@ def _exif(img):
     except Exception:
         pass
     return out
+
+
+def _gps_ok(row, field_labels):
+    """EXIF lat / long present and inside the allowed range (India, settings.IMAGE_FIELDS)."""
+    lat, lon = row.get("exif_latitude"), row.get("exif_longitude")
+    if lat is None or lon is None:
+        return False
+    lat_range = field_labels.get("latitude", {}).get("range", (-90, 90))
+    lon_range = field_labels.get("longitude", {}).get("range", (-180, 180))
+    return lat_range[0] <= lat <= lat_range[1] and lon_range[0] <= lon <= lon_range[1]
 
 
 # =============================================================================
@@ -198,7 +210,10 @@ def read_image(job):
     row.update(width=img.width, height=img.height)
     row.update(_exif(img))
 
-    if cfg["ocr"]:
+    # OCR only when EXIF has no usable GPS (settings.IMAGE_OCR = "when_no_gps"); "always" = every image
+    gps_ok = _gps_ok(row, cfg["fields"])
+    skip_ocr = cfg.get("ocr_mode", "when_no_gps") == "when_no_gps" and gps_ok
+    if cfg["ocr"] and not skip_ocr:
         import pytesseract
         if cfg["tesseract_cmd"]:
             pytesseract.pytesseract.tesseract_cmd = cfg["tesseract_cmd"]
@@ -217,7 +232,9 @@ def read_image(job):
     found = [f for f in cfg["fields"] if row.get(f) not in (None, "")]
     row["fields_found"] = len(found)
     row["issues"] = "; ".join(issues)
-    if not cfg["ocr"]:
+    if skip_ocr:
+        row["status"] = "exif_gps (no OCR needed)"
+    elif not cfg["ocr"]:
         row["status"] = "not_read (OCR off)"
     elif not found and not any(k.startswith("exif_") for k in row):
         row["status"] = "no_text_found"

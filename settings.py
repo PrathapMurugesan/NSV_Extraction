@@ -105,6 +105,8 @@ PROFILE_MAX_DISTINCT = 1000      # distinct values are counted up to this number
 import os as _os
 
 OCR_IMAGES = True
+IMAGE_OCR = "when_no_gps"        # "when_no_gps" = tesseract only for images without usable EXIF GPS lat/long
+                                 # "always"      = tesseract on every image (banner fields: survey id, speed, ...)
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe" if _os.name == "nt" else None   # None = found on PATH (Linux)
 IMAGE_WORKERS = _os.cpu_count() or 1        # CPU cores used in parallel (~0.6 s per image per core)
 if _os.environ.get("NSV_IMAGE_WORKERS"):    # export NSV_IMAGE_WORKERS=40 (run_status_csv.py sets it per UPC)
