@@ -28,9 +28,9 @@ WORKBOOKS = {
     "crri_pci": {
         "file_names": ["CRRI_PCI(IRC82-2023).xlsm"],
         "sheets": {
-            "rural_roads": {"sheet_names": ["RURAL ROADS (CRRI.PCI-PK)"], **CRRI_TABLE},
-            "mdr":         {"sheet_names": ["MDR (CRRI.PCI-PK)"], **CRRI_TABLE},
-            "urban_roads": {"sheet_names": ["UrbanRoads (CRRI.PCI-PK)"], **CRRI_TABLE},
+            "rural_roads": {"sheet_names": ["RURAL ROADS (CRRI.PCI-PK)"], **CRRI_TABLE, "optional": True},  # road class
+            "mdr":         {"sheet_names": ["MDR (CRRI.PCI-PK)"], **CRRI_TABLE, "optional": True},          # sheets: only
+            "urban_roads": {"sheet_names": ["UrbanRoads (CRRI.PCI-PK)"], **CRRI_TABLE, "optional": True},  # the road's class
             "highways":    {"sheet_names": ["HIGHWAYS(CRRI.PCI-PK)"], **CRRI_TABLE},
         },
     },
@@ -112,7 +112,7 @@ def run(survey):
     extract_image_folders(run, run.input_folder, IMAGE_FOLDERS, files, IMAGE_LOCATION)
 
     # ---- Excel files that are not in the config: every sheet saved as found ----
-    extract_unmatched_files(run)
+    extract_unmatched_files(run, check_nulls=True)
 
     return run.finish()
 

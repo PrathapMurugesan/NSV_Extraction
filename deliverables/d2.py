@@ -44,8 +44,8 @@ WORKBOOKS = {
             # ---- data tables ----
             "comparison_ca":     {"sheet_names": ["Comparison as per CA"], **COMPARISON_HEADER},
             "comparison_irc":    {"sheet_names": ["Comparison as per IRC"], **COMPARISON_HEADER},
-            "sheet_100m":        {"sheet_names": ["100m"]},
-            "sheet_1000m":       {"sheet_names": ["1000m"]},
+            "sheet_100m":        {"sheet_names": ["100m"], "optional": True},     # only in some templates
+            "sheet_1000m":       {"sheet_names": ["1000m"], "optional": True},
             "uc_maintenance":    {"sheet_names": ["UC & Maintenance Stretches"]},
             "potholes":          {"sheet_names": ["Potholes & Minor Depressions"],
                                   "columns": "A:G",     # the pothole list; I:M are small count tables ...
@@ -81,7 +81,7 @@ def run(survey):
     extract_workbook(run, files, "comparison", WORKBOOKS, check_nulls=True)
 
     # ---- Excel files that are not in the config: every sheet saved as found ----
-    extract_unmatched_files(run)
+    extract_unmatched_files(run, check_nulls=True)
 
     return run.finish()
 

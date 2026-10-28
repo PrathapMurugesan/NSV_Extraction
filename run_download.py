@@ -253,6 +253,18 @@ class S3DownloadStorage(DownloadStorage):
 # =============================================================================
 # Run
 # =============================================================================
+def _option(args, name):
+    """Values after an option: ['--phase', '1', '2', 'd1'] -> ['1', '2', 'd1'] up to the next '--...'."""
+    if name not in args:
+        return []
+    values = []
+    for a in args[args.index(name) + 1:]:
+        if a.startswith("--"):
+            break
+        values.append(a)
+    return values
+
+
 def main(args):
     root = RAW_ROOT
     if "--root" in args:
@@ -308,6 +320,14 @@ def main(args):
         logger.info(f"  {r[0]}/{r[1]}/{r[2]}/{r[3]:18} {r[4]}  {r[6]:4} file(s)  {r[7]:8} {r[5]}")
     for upc in missing:
         logger.error(f"UPC {upc} not found in {root}")
+    wanted = {name: _option(args, f"--{name}") for name in ("zone", "phase", "cycle")}
+    for upc in sorted({r[3] for r in rows if r[7] == "used"}):
+        places = sorted({(r[0], r[1], r[2]) for r in rows if r[3] == upc and r[7] == "used"})
+        if not any(all(not wanted[n] or str(v) in wanted[n] for n, v in zip(("zone", "phase", "cycle"), p))
+                   for p in places):
+            logger.error(f"UPC {upc} is in the download only under {['/'.join(p) for p in places]} (zone/phase/cycle)"
+                         f" - not under the requested {'/'.join(','.join(v) if v else '*' for v in wanted.values())}"
+                         f" - check the zone / phase / cycle in the status list")
     if not folders:
         logger.error("nothing to run")
         return 1

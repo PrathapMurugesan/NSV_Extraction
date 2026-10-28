@@ -10,11 +10,12 @@ assigned before any looser tier, so a vendor column with the exact name always w
     unit          'Chainage from (m)'   -> 'Chainage from (km)'         yes  (same name, unit of the same kind)
                   'Chainage from'       -> 'Chainage from (km)'         yes  (no unit in the vendor header)
     alias         'NH No.'              -> 'NH Number'                  yes  (listed in the schema csv, 'aliases')
-    position      column CC 'Raveling Lane Area (sq. m) | L4'          yes, WARNING 'expected X, got Y'
-                    -> 'Raveling Lane Area (%) @ 10 mtr | L4'  (schema column CC)
-                  = the header differs, but the column is in the SAME place as in the template and holds
-                    the SAME kind of values (number / text / date). Only columns no other tier claimed.
-                    Different kind of values -> not a match (the sheet is rejected).
+    position      column Q 'Cracking Index' -> 'Crack Index' (schema column Q)  yes, WARNING 'expected X, got Y'
+                  = the header differs, but the column is in the SAME place as in the template, holds
+                    the SAME kind of values (number / text / date), the names still look alike (one inside
+                    the other, or 60 % similar) and the units are of the same kind. Only columns no other
+                    tier claimed. NOT a match: 'Raveling Lane Area (sq. m)' for '... (%)' (other unit),
+                    'L4 Length' for 'Overall Reporting Interval' (other name).
     fuzzy         'Chainage Frm (km)'   -> 'Chainage from (km)'         NO - only a hint in the log
 Fuzzy is never accepted because of near-twins: 'Chainage from' / 'Chainage To', 'Severity' /
 'Pothole Severity', L1 / R1 ... look alike but are different columns.
@@ -25,7 +26,7 @@ the schema) are recorded in schema.json. If removing units would give two column
 (e.g. 'Cracking Lane Area (%)' and 'Cracking Lane Area (sq. m.)'), those columns keep their unit.
 """
 import re
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 
 from nsv.excel import clean_text
 
@@ -75,6 +76,33 @@ def value_type(values):
             kind = "text"
         counts[kind] = counts.get(kind, 0) + 1
     return max(counts, key=counts.get) if counts else "empty"
+
+
+POSITION_MIN_SIMILARITY = 0.6     # position tier: the two names must still look alike
+MARKERS = [{"l1", "l2", "l3", "l4", "r1", "r2", "r3", "r4"}, {"current", "previous"},
+           {"from", "to", "start", "end"}, {"min", "max", "avg", "average"}, {"length", "interval"}]
+
+
+def _names_agree(expected, found):
+    """Position tier: same kind of unit (never % <-> sq m) and names alike - one inside the other
+    ('L4 Lane Roughness BI' in 'Current Cycle | L4 Lane Roughness BI') or similar ('Crack Index' /
+    'Cracking Index'). 'L4 Length' is never taken for 'Overall Reporting Interval'."""
+    e_base, _, e_kind = split_unit(expected)
+    f_base, _, f_kind = split_unit(found)
+    if e_kind and f_kind and e_kind != f_kind:
+        return False
+    e_words, f_words = set(re.findall(r"[a-z0-9]+", e_base.lower())), set(re.findall(r"[a-z0-9]+", f_base.lower()))
+    for group in MARKERS:                               # both name a lane / cycle / end: it must be the same one
+        e_has, f_has = e_words & group, f_words & group
+        if e_has and f_has and e_has != f_has:
+            return False
+    a, b = _norm(e_base), _norm(f_base)
+    if not a or not b:
+        return False
+    short, long_ = sorted((a, b), key=len)
+    if len(short) >= 4 and short in long_:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= POSITION_MIN_SIMILARITY
 
 
 def _norm(text):
@@ -139,7 +167,7 @@ def match_headers(found, expected, aliases=None, info=None, letters=None, values
             continue
         expected_type = info[e].get("value_type") or "empty"
         found_type = value_type(values[i])
-        if "empty" in (expected_type, found_type) or expected_type == found_type:
+        if ("empty" in (expected_type, found_type) or expected_type == found_type) and _names_agree(e, found[i]):
             match[i] = (e, "position")
             position_types[i] = (found_type, expected_type)
 

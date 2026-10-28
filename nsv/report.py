@@ -11,6 +11,9 @@ Saved next to the batch summary as  bronze/nsv/_batches/batch=<timestamp>_report
                       columns keep the vendor's headers; reason lists the missing ones
     saved_not_in_config    a sheet / Excel file that is not in the deliverable config, saved as found
     not_readable_not_in_config  a sheet not in the config that is not a table (empty, chart) - not saved
+    split_into_variants   several sheets / files fit one configured sheet / workbook ('Rigid - Comparison as
+                      per CA' + 'Flexible - ...', 'x.xlsm' + 'x (1).xlsm'): each extracted with its settings
+    optional_missing  an optional sheet / folder (e.g. a CRRI road class) was not delivered - not an error
     saved_cells       report sheet saved cell by cell
     skipped_by_config deliberately not extracted (skip: True)
     REJECTED_HEADERS  headers differ from the schema -> NOT saved (reason lists the missing headers)
@@ -22,7 +25,6 @@ Saved next to the batch summary as  bronze/nsv/_batches/batch=<timestamp>_report
     not_extracted     workbook was found, but the deliverable stopped because another workbook is missing
     unexpected_file   a file in the folder that is not expected - ignored
     images_saved      an image folder was read: one row per image in d4_images_<group> (notes: status counts)
-    optional_missing  an optional folder (e.g. crack images) was not delivered - highlighted, not an error
     IMAGES_MISSING    a REQUIRED image folder was not delivered
 Upper-case statuses are the problems to look at.
 """
@@ -80,8 +82,16 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
             rows.append({**wb_base, "status": "WORKBOOK_MISSING", "reason": "expected workbook not found in the folder"
                          + (f" - {wb['closest']}" if wb.get("closest") else "")})
             continue
+        if wb.get("status") == "split_into_variants":
+            copies = wb.get("identical_copies")
+            rows.append({**wb_base, "status": "split_into_variants",
+                         "reason": f"several files fit, each extracted on its own: {wb.get('variants')}"
+                                   + (f" (identical copies not extracted again: {copies})" if copies else "")})
+            continue
         if wb.get("identified_by") and wb["identified_by"] != "file name":
             wb_base["notes"] = f"file recognised by content: {wb['identified_by']}"
+        if wb.get("variant_of"):
+            wb_base["notes"] = f"one of several files for '{wb['variant_of']}'"
         if wb.get("status") == "found" and not wb.get("sheets"):
             rows.append({**wb_base, "status": "not_extracted",
                          "reason": "deliverable stopped: another expected workbook is missing"})
@@ -99,6 +109,10 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
                 reason = f"no sheet like {result.get('expected_names')}" + \
                          (f" - {result['closest']}" + (" (saved as not in config)" if settings.EXTRACT_UNMATCHED
                                                        else "") if result.get("closest") else "")
+            elif status == "optional_missing":
+                reason = f"optional sheet not in the file (like {result.get('expected_names')})"
+            elif status == "split_into_variants":
+                reason = f"several sheets like it, each extracted with its settings: {result.get('variants')}"
             elif status in ("READ_ERROR", "not_readable_not_in_config"):
                 reason = result.get("error")
             check = result.get("header_check")
@@ -116,8 +130,10 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
                          (f" (+{len(differ) - 3} more, see schema.json)" if len(differ) > 3 else "")
             rows.append({**wb_base, "sheet": result.get("sheet_name") or sheet_key, "status": status,
                          "rows": result.get("rows", ""), "reason": reason,
-                         "notes": "; ".join(n for n in (wb_base["notes"], _notes(result) if status.startswith("saved")
-                                                        else "") if n)})
+                         "notes": "; ".join(n for n in (wb_base["notes"],
+                                                        f"one of several sheets for '{result['variant_of']}'"
+                                                        if result.get("variant_of") else "",
+                                                        _notes(result) if status.startswith("saved") else "") if n)})
 
     # ---- csv deliverable (D3): one row per file ----
     for relative, entry in manifest.get("csv_files", {}).items():

@@ -11,7 +11,7 @@ Per column:  excel_column, filled / empty counts, value types found (number / te
 value - e.g. an unfilled template row whose formulas still display defaults (PCI = 100).
 """
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 import settings
 from nsv.excel import is_blank
@@ -26,7 +26,7 @@ def _kind(value):
         return "bool"
     if isinstance(value, (int, float)):
         return "number"
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, (datetime, date, time)):      # a time of day ('10:30') counts as a date / time
         return "date"
     return "text"
 
@@ -77,7 +77,10 @@ def profile_column(name, values, letter=None, has_formula=False, vendor_header=N
     if numbers:
         profile["min"], profile["max"] = min(numbers), max(numbers)
     if dates:
-        profile["first_date"], profile["last_date"] = min(dates), max(dates)
+        try:
+            profile["first_date"], profile["last_date"] = min(dates), max(dates)
+        except TypeError:                              # dates and times of day mixed: compare as text
+            profile["first_date"], profile["last_date"] = min(map(str, dates)), max(map(str, dates))
     return profile
 
 

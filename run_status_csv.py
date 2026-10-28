@@ -99,6 +99,8 @@ def status_of(code, log_path):
     if code == 2:
         return "extracted with problems (see log: REJECTED / missing / crashed)"
     text = Path(log_path).read_text(encoding="utf-8", errors="replace") if log_path else ""
+    if "is in the download only under" in text:
+        return "UPC in S3 under another zone/phase/cycle than in the CSV (see log)"
     if "not found in" in text or "nothing to run" in text:
         return "UPC not found in S3"
     return "error (see log)"

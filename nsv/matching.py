@@ -96,7 +96,7 @@ def identify_names(found, expected, threshold, label="workbook", is_file=True, q
             else:
                 missing.append(key)
                 unexpected += [n for _, n in matches]
-                logger.error(f"[{key}] ambiguous - several {label}s match: {[n for _, n in matches]}")
+                logger.warning(f"[{key}] several {label}s match: {[n for _, n in matches]} - left to the caller")
         else:
             score, name = matches[0]
             identified[key] = name
@@ -106,7 +106,7 @@ def identify_names(found, expected, threshold, label="workbook", is_file=True, q
 
     if not quiet:
         for name in unexpected:
-            logger.warning(f"unexpected {label}, ignored: '{name}'")
+            logger.warning(f"{label} not in the config: '{name}'")
     return identified, missing, unexpected
 
 

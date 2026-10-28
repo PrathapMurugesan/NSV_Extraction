@@ -50,7 +50,7 @@ BATCH_FOLDER = "bronze/nsv/_batches"             # summary of every loop over se
 
 ZONES = ["A", "B", "C", "D", "E"]                # allowed values - other folders are reported and ignored
 PHASES = ["1", "2", "3"]
-CYCLES = ["1", "2"]
+CYCLES = ["1", "2", "3"]          # Cycle_3 exists in the download (e.g. Zone_C/Phase_1/Cycle_3)
 DELIVERABLES = ["d1", "d2", "d3", "d4"]          # deliverable folder names inside a UPC folder
 
 

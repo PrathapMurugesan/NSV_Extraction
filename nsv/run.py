@@ -101,6 +101,7 @@ class Run:
             "sheets_missing": count(sheets, "missing"),
             "sheets_read_error": count(sheets, "read_error"),
             "sheets_skipped_by_config": count(sheets, "skipped_by_config"),
+            "workbooks_missing": count(list(self.manifest["workbooks"].values()), "missing"),
             "csv_saved": count(csvs, "saved"),
             "csv_read_error": count(csvs, "read_error"),
             "image_folders_saved": count(list(self.manifest.get("image_folders", {}).values()), "saved"),
@@ -110,7 +111,7 @@ class Run:
         self.manifest["summary"] = summary
         required_missing = sum(1 for f in self.manifest.get("image_folders", {}).values()
                                if f.get("status") == "missing" and f.get("required"))
-        problems = (summary["sheets_rejected"] + summary["sheets_missing"]
+        problems = (summary["sheets_rejected"] + summary["sheets_missing"] + summary["workbooks_missing"]
                     + summary["sheets_read_error"] + summary["csv_read_error"] + required_missing)
         self.manifest["status"] = status or ("completed_with_problems" if problems else "completed")
         self.manifest["finished_at"] = datetime.now().isoformat(timespec="seconds")

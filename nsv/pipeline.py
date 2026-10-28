@@ -78,14 +78,29 @@ def find_workbooks(run, folder, workbooks):
     how = {key: "file name" for key in found}
 
     # ---- 2-4. by what is inside the left-over files ----
-    sheet_cache = {}
+    sheet_cache, several = {}, {}
     for step in ("keywords_and_sheets", "sheets", "keywords"):
         for key in list(missing):
-            name, reason = _find_by_content(key, workbooks[key], step, unexpected, paths, sheet_cache)
-            if name:
-                found[key], how[key] = name, reason
+            names, reason = _find_by_content(key, workbooks[key], step, unexpected, paths, sheet_cache)
+            if len(names) == 1:
+                found[key], how[key] = names[0], reason
                 missing.remove(key)
-                unexpected.remove(name)
+                unexpected.remove(names[0])
+            elif len(names) > 1 and key not in several:
+                several[key] = (names, reason)
+
+    # ---- several files fit one workbook (a copy 'x (1).xlsm', two road sections): each is extracted with
+    #      that workbook's settings, as '<workbook>__<file name>' (see extract_unmatched_files) ----
+    run.workbook_variants = {}
+    for key, (names, reason) in several.items():
+        if key not in missing or any(n not in unexpected for n in names):
+            continue
+        logger.warning(f"[{key}] several files fit ({reason}): {names} - each is extracted")
+        missing.remove(key)
+        for name in names:
+            unexpected.remove(name)
+            run.workbook_variants[name] = (key, workbooks[key], paths[name])
+        how[key] = f"several files: {names}"
 
     # ---- log what is still missing / unexpected ----
     closest = {}
@@ -97,10 +112,13 @@ def find_workbooks(run, folder, workbooks):
                      + (f", or a name containing {cfg['file_keywords']}" if cfg.get("file_keywords") else "")
                      + f") - {closest[key]}")
     for name in unexpected:
-        logger.warning(f"unexpected workbook, ignored: '{name}'")
+        logger.warning(f"workbook not in the config: '{name}'"
+                       + (" - every sheet saved as found" if settings.EXTRACT_UNMATCHED else ", ignored"))
 
     for key in workbooks:
-        run.manifest["workbooks"][key] = {"file": found.get(key), "status": "found" if key in found else "missing",
+        variants = [n for n, v in run.workbook_variants.items() if v[0] == key]
+        status = "found" if key in found else "split_into_variants" if variants else "missing"
+        run.manifest["workbooks"][key] = {"file": found.get(key), "status": status, "variants": variants,
                                           "identified_by": how.get(key), "closest": closest.get(key), "sheets": {}}
     run.manifest["unexpected_files"] = unexpected
     run.unmatched_files = {name: paths[name] for name in unexpected}     # -> extract_unmatched_files
@@ -114,7 +132,7 @@ def find_workbooks(run, folder, workbooks):
 
 def _find_by_content(key, cfg, step, names, paths, sheet_cache):
     """
-    The one file among names that fits this step (see find_workbooks); (None, None) otherwise.
+    ([files among names that fit this step], reason)  (see find_workbooks)
       keywords_and_sheets  name has all file_keywords + file has all identify_by_sheets
       sheets               file has all identify_by_sheets, or else all configured (not skipped) sheets
       keywords             name has all file_keywords (sheets not checked)
@@ -123,9 +141,9 @@ def _find_by_content(key, cfg, step, names, paths, sheet_cache):
     sheets_wanted = cfg.get("identify_by_sheets") or [s["sheet_names"][0] for s in cfg["sheets"].values()
                                                       if not s.get("skip")]
     if step != "sheets" and not keywords:
-        return None, None
+        return [], None
     if step == "keywords_and_sheets" and not cfg.get("identify_by_sheets"):
-        return None, None
+        return [], None
 
     candidates = [n for n in names if all(k in normalize_name(n) for k in keywords)] if step != "sheets" else names
     accepted = []
@@ -149,10 +167,7 @@ def _find_by_content(key, cfg, step, names, paths, sheet_cache):
               "keywords": f"name contains {cfg.get('file_keywords')} (sheets not checked)"}[step]
     if len(accepted) == 1:
         logger.warning(f"[{key}] workbook '{accepted[0]}' recognised: {reason} (file name not in config)")
-        return accepted[0], reason
-    if len(accepted) > 1:
-        logger.error(f"[{key}] ambiguous - several files fit ({reason}): {accepted}")
-    return None, None
+    return accepted, reason
 
 
 def _sheet_names(key, name, paths, cache):
@@ -185,6 +200,9 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
     """
     config = workbooks[wb_key]
     entry = run.manifest["workbooks"].setdefault(wb_key, {"file": None, "status": "missing", "sheets": {}})
+    if entry.get("status") == "split_into_variants":
+        logger.info(f"[{wb_key}] several files fit - each is extracted on its own: {entry['variants']}")
+        return
     if wb_key not in files:
         logger.error(f"[{wb_key}] workbook not found - nothing extracted")
         return
@@ -207,21 +225,45 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
     sheet_cfgs = config["sheets"]
     expected = {key: cfg["sheet_names"] for key, cfg in sheet_cfgs.items()}
     found, missing, unexpected = identify_names(wb.sheet_names, expected, settings.FUZZY_THRESHOLD,
-                                                label=f"sheet in '{wb.file_name}'", is_file=False)
-    entry["unexpected_sheets"] = unexpected
+                                                label=f"sheet in '{wb.file_name}'", is_file=False, quiet=True)
+    entry["unexpected_sheets"] = list(unexpected)
+
+    # ---- a2. a configured sheet not found, but several sheets look like it ('Rigid - Comparison as per CA' and
+    #          'Flexible - Comparison as per CA'): each is extracted with that sheet's settings ----
+    to_read = [(key, key, name) for key, name in found.items()]           # (result key, config key, sheet)
+    for key in list(missing):
+        alike = [n for n in unexpected
+                 if match_score(n, sheet_cfgs[key]["sheet_names"], is_file=False) >= settings.FUZZY_THRESHOLD]
+        if len(alike) > 1 and not sheet_cfgs[key].get("skip"):
+            logger.warning(f"[{wb_key}/{key}] several sheets like '{sheet_cfgs[key]['sheet_names'][0]}': {alike} "
+                           f"- each is extracted with its settings")
+            missing.remove(key)
+            entry["sheets"][key] = {"status": "split_into_variants", "variants": alike}
+            for name in alike:
+                unexpected.remove(name)
+                to_read.append((f"{key}__{safe_name(name)}", key, name))
+
     for key in missing:
-        entry["sheets"][key] = {"status": "missing", "expected_names": sheet_cfgs[key]["sheet_names"]}
+        optional = sheet_cfgs[key].get("optional")
+        entry["sheets"][key] = {"status": "optional_missing" if optional else "missing",
+                                "expected_names": sheet_cfgs[key]["sheet_names"]}
         scores = sorted(((match_score(n, sheet_cfgs[key]["sheet_names"], is_file=False), n) for n in unexpected),
                         reverse=True)
         if scores:
             entry["sheets"][key]["closest"] = f"closest sheet in the file: '{scores[0][1]}' ({scores[0][0]:.2f})"
+        (logger.info if optional else logger.error)(
+            f"[{wb_key}/{key}] {'optional ' if optional else ''}sheet not in '{wb.file_name}' (expected like "
+            f"'{sheet_cfgs[key]['sheet_names'][0]}')" + (f" - {entry['sheets'][key]['closest']}" if scores else ""))
 
     # ---- b-g. every sheet that was found ----
     meta = {"schema": {}, "profile": {}, "formulas": {}, "data_dictionary": {}}
-    for sheet_key, sheet_name in found.items():
-        options = sheet_cfgs[sheet_key]
+    schema_wb = config.get("schema_workbook", wb_key)          # a variant file uses its workbook's schemas
+    for sheet_key, cfg_key, sheet_name in to_read:
+        options = {**sheet_cfgs[cfg_key], "schema": f"{schema_wb}/{cfg_key}"}
         label = f"{wb_key}/{sheet_key}"
         result = {"sheet_name": sheet_name}
+        if sheet_key != cfg_key:
+            result["variant_of"] = cfg_key
         entry["sheets"][sheet_key] = result
 
         if options.get("skip"):
@@ -239,6 +281,8 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
             result.update(status="read_error", error=str(e))
 
     # ---- sheets that are not in the config: saved too, header found automatically ----
+    if unexpected and not settings.EXTRACT_UNMATCHED:
+        logger.warning(f"[{wb_key}] sheet(s) not in the config, ignored: {unexpected}")
     if settings.EXTRACT_UNMATCHED:
         for sheet_name in unexpected:
             sheet_key = f"extra_{safe_name(sheet_name)}"
@@ -273,7 +317,7 @@ def _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, options, check_nulls,
 
     # ---- c. GATE: headers - match to the schema (exact / normalized / unit / alias), then final names ----
     schema = None if settings.EXTRACT_ALL else load_schema(
-        settings.SCHEMAS_DIR / run.deliverable / wb_key / f"{sheet_key}.csv")
+        settings.SCHEMAS_DIR / run.deliverable / f"{options.get('schema', f'{wb_key}/{sheet_key}')}.csv")
     expected, aliases, info = schema if schema else ([], {}, {})
     matched = match_headers(table.names, expected, aliases, info,
                             letters=[c["letter"] for c in table.columns],
@@ -346,9 +390,29 @@ def _save_cells(run, wb, wb_key, sheet_key, sheet_name, columns, result):
     logger.info(f"[{wb_key}/{sheet_key}] {len(cells)} cells{' in ' + columns if columns else ''} saved -> {path}")
 
 
-def extract_unmatched_files(run):
-    """Excel files in the folder that are not in the deliverable config (find_workbooks): every sheet saved,
-    header found automatically (settings.EXTRACT_UNMATCHED)."""
+def extract_unmatched_files(run, check_nulls=False):
+    """
+    After the configured workbooks (find_workbooks):
+      - several files that fit one workbook: each extracted with that workbook's settings as
+        '<workbook>__<file name>' (a byte-identical copy such as 'x (1).xlsm' only once)
+      - Excel files not in the deliverable config: every sheet saved, header found automatically
+        (settings.EXTRACT_UNMATCHED)
+    """
+    import hashlib
+    done = {}
+    for name, (key, cfg, path) in getattr(run, "workbook_variants", {}).items():
+        digest = hashlib.sha256(settings.INPUT.read_bytes(path)).hexdigest()
+        if digest in done:
+            logger.info(f"[{key}] '{name}' is the same file as '{done[digest]}' (identical content) - not extracted again")
+            run.manifest["workbooks"][key].setdefault("identical_copies", []).append(name)
+            continue
+        done[digest] = name
+        vkey = f"{key}__{safe_name(PurePosixPath(name).stem)}"
+        run.manifest["workbooks"][vkey] = {"file": PurePosixPath(name).name, "status": "found", "variant_of": key,
+                                           "identified_by": run.manifest["workbooks"][key].get("identified_by"),
+                                           "sheets": {}}
+        extract_workbook(run, {vkey: path}, vkey, {vkey: {**cfg, "schema_workbook": key}}, check_nulls=check_nulls)
+
     if not settings.EXTRACT_UNMATCHED:
         return
     for name, path in getattr(run, "unmatched_files", {}).items():

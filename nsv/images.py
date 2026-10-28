@@ -359,6 +359,9 @@ def read_offsets(data):
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     rows = [list(r) for r in wb.worksheets[0].iter_rows(values_only=True)]
     wb.close()
+    if len(rows) < 2:
+        logger.warning("[images] NSV Cracks sheet is empty - no nsv_cracks_chainage")
+        return {}
     head = [_clean(v) for v in rows[0]]
     if "image name" not in head or "start chainage" not in head:
         logger.warning("[images] NSV Cracks has no 'Image Name' / 'Start Chainage' column - no nsv_cracks_chainage")
@@ -385,6 +388,9 @@ def read_lane_locations(data, sheet_name):
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.worksheets[0]
     rows = [list(r) for r in ws.iter_rows(values_only=True)]
     wb.close()
+    if len(rows) < 3:
+        logger.warning(f"[images] defect report sheet '{ws.title}' has {len(rows)} row(s) - no lane locations")
+        return {}
     top, sub = [_clean(v) for v in rows[0]], [_clean(v) for v in rows[1]]
     if "chainage" not in top:
         logger.warning("[images] defect report has no 'Chainage' column - images located by EXIF / OCR only")
