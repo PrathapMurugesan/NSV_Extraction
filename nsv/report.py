@@ -7,6 +7,9 @@ Saved next to the batch summary as  bronze/nsv/_batches/batch=<timestamp>_report
     saved             extracted and saved                      (notes may still say: no data, empty columns ...)
     saved_headers_differ  saved, but some headers differ from the schema: the column in the same place holds
                       the same kind of values, so it was accepted (reason: expected '...', got '...')
+    saved_headers_missing  saved although schema headers are missing (settings.CHECK_HEADERS off) - the
+                      columns keep the vendor's headers; reason lists the missing ones
+    saved_not_in_config    a sheet / Excel file that is not in the deliverable config, saved as found
     saved_cells       report sheet saved cell by cell
     skipped_by_config deliberately not extracted (skip: True)
     REJECTED_HEADERS  headers differ from the schema -> NOT saved (reason lists the missing headers)
@@ -96,7 +99,14 @@ def report_rows(survey, deliverable, status, manifest=None, error=None):
                 reason = result.get("error")
             check = result.get("header_check")
             differ = check.get("different_headers") if isinstance(check, dict) else None
-            if status == "saved" and differ:
+            if status == "saved" and result.get("not_in_config"):
+                status = "saved_not_in_config"
+                reason = "sheet / file not in the deliverable config - saved as found (header found automatically)"
+            elif status == "saved" and isinstance(check, dict) and check.get("missing"):
+                status = "saved_headers_missing"
+                reason = (f"{len(check['missing'])} schema header(s) not in the file, saved with the vendor's "
+                          f"headers: {check['missing'][:5]}")
+            elif status == "saved" and differ:
                 status = "saved_headers_differ"
                 reason = "; ".join(f"expected '{e}', got '{g}'" for e, g in list(differ.items())[:3]) + \
                          (f" (+{len(differ) - 3} more, see schema.json)" if len(differ) > 3 else "")

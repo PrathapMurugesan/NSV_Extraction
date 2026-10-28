@@ -79,8 +79,18 @@ def identify_names(found, expected, threshold, label="workbook", is_file=True, q
             if not quiet:
                 logger.error(f"[{key}] no {label} found (expected like '{expected[key][0]}')")
         elif len(matches) > 1:
-            missing.append(key)
-            logger.error(f"[{key}] ambiguous - several {label}s match: {[n for _, n in matches]}")
+            matches.sort(reverse=True)
+            if matches[0][0] >= 1.0 > matches[1][0]:
+                # one has the same name ('Comparison as per CA'), the others only look alike
+                # ('Comparison As per CA @100m') -> the same name wins, the look-alikes are unexpected
+                identified[key] = matches[0][1]
+                unexpected += [n for _, n in matches[1:]]
+                logger.info(f"[{key}] {label} '{matches[0][1]}' (same name - look-alikes "
+                            f"{[n for _, n in matches[1:]]} left as unexpected)")
+            else:
+                missing.append(key)
+                unexpected += [n for _, n in matches]
+                logger.error(f"[{key}] ambiguous - several {label}s match: {[n for _, n in matches]}")
         else:
             score, name = matches[0]
             identified[key] = name

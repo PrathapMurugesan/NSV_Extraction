@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))     # allows: python deliverables/d4.py ...
 
 import settings
-from nsv.pipeline import extract_everything, extract_image_folders, extract_workbook, find_workbooks
+from nsv.pipeline import extract_everything, extract_unmatched_files, extract_image_folders, extract_workbook, find_workbooks
 from nsv.run import Run
 
 DELIVERABLE = "d4"
@@ -110,6 +110,9 @@ def run(survey):
 
     # ---- block 6: survey images (optional folders) -> one row per image: OCR text + chainage + lat/long ----
     extract_image_folders(run, run.input_folder, IMAGE_FOLDERS, files, IMAGE_LOCATION)
+
+    # ---- Excel files that are not in the config: every sheet saved as found ----
+    extract_unmatched_files(run)
 
     return run.finish()
 

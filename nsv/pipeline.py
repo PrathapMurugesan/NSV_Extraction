@@ -10,6 +10,8 @@ What happens to each sheet of a workbook (extract_workbook):
     a. find it by name (exact or fuzzy)                     missing          -> logged, manifest
     b. read it as a table (header found, merges handled)    unreadable       -> logged, manifest
     c. header check against schemas/...csv  (the GATE)      headers missing  -> REJECTED, not saved
+                                                            (settings.CHECK_HEADERS off: saved, vendor headers)
+    sheets / Excel files not in the config: saved as found (settings.EXTRACT_UNMATCHED, extract_unmatched_files)
     d. formulas -> formulas.json, legends -> data_dictionary.json
     e. profile -> profile.json
     f. reports: empty sheet, defect columns, lanes (never stop anything)
@@ -101,6 +103,7 @@ def find_workbooks(run, folder, workbooks):
         run.manifest["workbooks"][key] = {"file": found.get(key), "status": "found" if key in found else "missing",
                                           "identified_by": how.get(key), "closest": closest.get(key), "sheets": {}}
     run.manifest["unexpected_files"] = unexpected
+    run.unmatched_files = {name: paths[name] for name in unexpected}     # -> extract_unmatched_files
 
     if missing and settings.STOP_IF_WORKBOOK_MISSING:
         logger.error(f"[{run.survey.label}] {run.deliverable} NOT extracted: missing workbook(s) {missing} "
@@ -231,6 +234,19 @@ def extract_workbook(run, files, wb_key, workbooks, check_nulls=False):
             logger.error(f"[{label}] could not read sheet '{sheet_name}': {e}")
             result.update(status="read_error", error=str(e))
 
+    # ---- sheets that are not in the config: saved too, header found automatically ----
+    if settings.EXTRACT_UNMATCHED:
+        for sheet_name in unexpected:
+            sheet_key = f"extra_{safe_name(sheet_name)}"
+            result = {"sheet_name": sheet_name, "not_in_config": True}
+            entry["sheets"][sheet_key] = result
+            logger.info(f"[{wb_key}/{sheet_key}] sheet '{sheet_name}' is not in the config - saved as found")
+            try:
+                _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, {}, check_nulls, result, meta)
+            except Exception as e:
+                logger.error(f"[{wb_key}/{sheet_key}] could not read sheet '{sheet_name}': {e}")
+                result.update(status="read_error", error=str(e))
+
     # ---- workbook-level JSONs ----
     for name, content in meta.items():
         if content:
@@ -266,14 +282,17 @@ def _extract_sheet(run, wb, wb_key, sheet_key, sheet_name, options, check_nulls,
     else:
         result["header_check"] = check_headers(matched, label, gate=settings.CHECK_HEADERS)
 
-    names = final_names(matched["columns"])            # schema name without unit, e.g. 'Chainage from'
+    columns = matched["columns"]
+    if matched["missing"]:     # layout differs from the template: the column in the template's place may be
+        columns = [{**c, "schema_header": None} if c["match"] == "position" else c for c in columns]  # another one
+    names = final_names(columns)                       # schema name without unit, e.g. 'Chainage from'
     meta["schema"][sheet_key] = {
         "sheet_name": sheet_name,
         "status": "rejected" if result["header_check"] not in ("off (EXTRACT_ALL)", "no schema file")
                   and not result["header_check"]["ok"] else "accepted",
         "missing_headers": matched["missing"],
         "columns": [{"column": n, "excel_column": col["letter"], **c}
-                    for n, col, c in zip(names, table.columns, matched["columns"])],
+                    for n, col, c in zip(names, table.columns, columns)],
     }
     if meta["schema"][sheet_key]["status"] == "rejected":
         result["status"] = "rejected_headers"
@@ -320,6 +339,19 @@ def _save_cells(run, wb, wb_key, sheet_key, sheet_name, columns, result):
     path = run.save_json(content, wb_key, sheet_key, *area, "cells")
     result.setdefault("outputs", []).append(path)
     logger.info(f"[{wb_key}/{sheet_key}] {len(cells)} cells{' in ' + columns if columns else ''} saved -> {path}")
+
+
+def extract_unmatched_files(run):
+    """Excel files in the folder that are not in the deliverable config (find_workbooks): every sheet saved,
+    header found automatically (settings.EXTRACT_UNMATCHED)."""
+    if not settings.EXTRACT_UNMATCHED:
+        return
+    for name, path in getattr(run, "unmatched_files", {}).items():
+        key = f"extra_{safe_name(PurePosixPath(name).stem)}"
+        logger.info(f"[{key}] '{name}' is not in the config - every sheet saved as found")
+        run.manifest["workbooks"][key] = {"file": PurePosixPath(name).name, "status": "found", "sheets": {}}
+        extract_workbook(run, {key: path}, key, {key: {"file_names": [name], "sheets": {}}})
+        run.manifest["unexpected_files"].remove(name)
 
 
 def _file_facts(path, data):

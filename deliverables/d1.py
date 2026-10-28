@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))     # allows: python deliverables/d1.py ...
 
 import settings
-from nsv.pipeline import extract_everything, extract_workbook, find_workbooks
+from nsv.pipeline import extract_everything, extract_unmatched_files, extract_workbook, find_workbooks
 from nsv.run import Run
 
 DELIVERABLE = "d1"
@@ -86,6 +86,9 @@ def run(survey):
 
     # ---- block 3: RIS data template ----
     extract_workbook(run, files, "ris", WORKBOOKS)
+
+    # ---- Excel files that are not in the config: every sheet saved as found ----
+    extract_unmatched_files(run)
 
     return run.finish()
 

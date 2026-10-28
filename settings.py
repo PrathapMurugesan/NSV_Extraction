@@ -58,6 +58,13 @@ DELIVERABLES = ["d1", "d2", "d3", "d4"]          # deliverable folder names insi
 # 3. SWITCHES
 # =============================================================================
 CHECK_HEADERS = True             # True = a sheet whose headers differ from its schema CSV is rejected (not saved)
+if os.environ.get("NSV_CHECK_HEADERS", "").lower() in ("0", "false", "no"):
+    CHECK_HEADERS = False              # export NSV_CHECK_HEADERS=0 : saved anyway, with the vendor's headers;
+                                       # the missing ones are listed in the report (saved_headers_missing)
+EXTRACT_UNMATCHED = True         # True = sheets / Excel files that are not in the deliverable config are saved too
+                                 #        (header found automatically; report status saved_not_in_config)
+if os.environ.get("NSV_EXTRACT_UNMATCHED", "").lower() in ("0", "false", "no"):
+    EXTRACT_UNMATCHED = False
 STOP_IF_WORKBOOK_MISSING = True  # True = if an expected workbook is not found, the deliverable is not extracted
 if os.environ.get("NSV_STOP_IF_WORKBOOK_MISSING", "").lower() in ("0", "false", "no"):
     STOP_IF_WORKBOOK_MISSING = False   # export NSV_STOP_IF_WORKBOOK_MISSING=0 : extract the workbooks that are there
