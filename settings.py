@@ -47,6 +47,7 @@ RAW_LAYOUT = "nsv/zone={zone}/phase={phase}/cycle={cycle}/{upc}/{deliverable}"
 BRONZE_LAYOUT = "bronze/nsv/zone={zone}/phase={phase}/cycle={cycle}/{upc}/{deliverable}"
 RUN_FOLDER = "run={run_id}"                      # one folder per extraction run, inside the bronze folder
 BATCH_FOLDER = "bronze/nsv/_batches"             # summary of every loop over several surveys
+MASTER_FOLDER = "master"                         # master tables over all UPCs (master/reporting_intervals.parquet)
 
 ZONES = ["A", "B", "C", "D", "E"]                # allowed values - other folders are reported and ignored
 PHASES = ["1", "2", "3"]
@@ -73,6 +74,9 @@ EXTRACT_ALL = False              # True = ignore the deliverable config: read ev
                                  #        header found automatically, no header check (for a new vendor layout)
 if os.environ.get("NSV_EXTRACT_ALL", "").lower() in ("1", "true", "yes"):
     EXTRACT_ALL = True                 # export NSV_EXTRACT_ALL=1 : for one run, e.g. python run_download.py d2 ...
+MASTER_INTERVALS = True          # True = after a run with d2, its UPCs are added to master/reporting_intervals
+if os.environ.get("NSV_MASTER_INTERVALS", "").lower() in ("0", "false", "no"):
+    MASTER_INTERVALS = False           # run_status_csv.py sets this for its parallel runs and updates once at the end
 
 
 # =============================================================================

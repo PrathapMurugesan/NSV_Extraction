@@ -17,6 +17,7 @@ One log per UPC:   logs/status_<timestamp>/<zone>_<phase>_<cycle>_<UPC>.log
 Summary:           logs/status_<timestamp>/summary.csv   (UPC, status, exit code, log file)
                    status = extracted / extracted with problems / UPC not found in S3 / error
 With NSV_OUTPUT=s3://bucket/prefix the folder is also copied to s3://bucket/prefix/logs/status_<timestamp>/
+At the end the UPCs are added to the master table  master/reporting_intervals.parquet / .csv  (nsv/intervals.py)
 """
 import argparse
 import csv
@@ -86,7 +87,8 @@ def run_one(survey, root, extra, log_dir, image_workers):
     log_path = log_dir / log_name(survey)
     command = [sys.executable, str(PROJECT_ROOT / "run_download.py"), *extra, "--root", root,
                "--upc", upc, "--zone", zone, "--phase", phase, "--cycle", cycle]
-    env = {**os.environ, "NSV_IMAGE_WORKERS": os.environ.get("NSV_IMAGE_WORKERS", str(image_workers))}
+    env = {**os.environ, "NSV_IMAGE_WORKERS": os.environ.get("NSV_IMAGE_WORKERS", str(image_workers)),
+           "NSV_MASTER_INTERVALS": "0"}        # parallel runs don't write the master table, main() does at the end
     with open(log_path, "w", encoding="utf-8") as log:
         code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, cwd=PROJECT_ROOT, env=env).returncode
     return code, log_path
@@ -119,6 +121,20 @@ def upload_logs(log_dir):
     for f in sorted(log_dir.iterdir()):
         s3.upload_file(str(f), bucket, f"{target}/{f.name}")
     return f"s3://{bucket}/{target}/"
+
+
+def update_intervals(surveys):
+    """Once, after all UPCs: add their rows to master/reporting_intervals (nsv/intervals.py).
+    Matched by UPC only, so a UPC extracted under another zone/phase/cycle (--use-found) is found too."""
+    if os.environ.get("NSV_MASTER_INTERVALS", "").lower() in ("0", "false", "no"):
+        return
+    try:
+        import settings
+        from nsv.intervals import extracted_surveys, update_master
+        upcs = {upc.replace("/", "-").upper() for _, _, _, upc in surveys}
+        update_master([s for s in extracted_surveys(settings.OUTPUT) if s[3].upper() in upcs])
+    except Exception as e:
+        print(f"master table of reporting intervals not updated: {e}")
 
 
 def main(args):
@@ -180,6 +196,7 @@ def main(args):
         if r[4] != "extracted":
             print(f"  {r[0]}/{r[1]}/{r[2]} {r[3]:20} {r[4]}")
     print(f"summary: {summary}")
+    update_intervals(surveys)
     try:
         where = upload_logs(log_dir)
         if where:

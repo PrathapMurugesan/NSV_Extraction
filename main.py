@@ -16,6 +16,8 @@ How the loop works:
     3. a batch summary of everything:          bronze/nsv/_batches/batch=<timestamp>.json
        and a simple report, one row per sheet:  bronze/nsv/_batches/batch=<timestamp>_report.csv
        (problems - rejected / missing / errors - are also printed at the end)
+    4. with d2: the surveys' rows are added to the master table  master/reporting_intervals.parquet / .csv
+       (see nsv/intervals.py; only that step:  python run_intervals.py)
 Exit code: 0 = everything completed, 2 = something had problems / crashed (see the batch summary).
 """
 import argparse
@@ -26,6 +28,7 @@ import settings
 from deliverables import d1, d2, d3, d4
 import pandas as pd
 
+from nsv.intervals import update_master
 from nsv.log import get_logger
 from nsv.report import COLUMNS, PROBLEMS, report_rows
 from nsv.survey import discover_surveys
@@ -132,6 +135,13 @@ def main(args):
             logger.warning(f"  {where}  {r.get('file')} / {r.get('sheet')}  -> {r.get('reason')}")
     logger.info(f"  full report (one row per sheet, open in Excel): {settings.OUTPUT.describe()}/{report_path}")
     logger.info(f"  batch summary: {settings.OUTPUT.describe()}/{path}")
+
+    # ---- 4. master table of reporting intervals (one row per UPC, from the d1 / d2 just saved) ----
+    if "d2" in wanted and settings.MASTER_INTERVALS:
+        try:
+            update_master([(s.zone, s.phase, s.cycle, s.upc_folder) for s in surveys])
+        except Exception:
+            logger.exception("master table of reporting intervals could not be updated")
     return 0 if all(r["status"] in OK_STATUSES for r in results) else 2
 
 

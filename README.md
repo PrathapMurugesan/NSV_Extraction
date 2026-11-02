@@ -45,6 +45,7 @@ nsv/                    the engine
     pipeline.py         the steps, in order
     survey.py           zone/phase/cycle/UPC -> raw and bronze paths; find all surveys
     images.py           survey images: EXIF + OCR by label + checks, in parallel
+    intervals.py        master table of reporting intervals, one row per UPC (run_intervals.py runs only this)
     run.py              one run = one output folder + manifest + run.log
     writer.py           parquet / csv / json bytes
 tools/make_schema.py    create schemas/ from a template file
@@ -68,7 +69,11 @@ data/bronze/nsv/zone=A/phase=1/cycle=1/N-08004-03001-HR/d2/
     d2_latest.json                                     newest run of this deliverable
 data/bronze/nsv/_batches/batch=<timestamp>.json        one line per survey x deliverable of a loop
 data/bronze/nsv/_batches/batch=<timestamp>_report.csv  ONE ROW PER SHEET: status, reason, notes  <- start here
+data/master/reporting_intervals.parquet + .csv         ONE ROW PER UPC: Rutting / Roughness / Ravelling / Cracking
+                                                       reporting interval (m) as per IRC and CA (nsv/intervals.py)
 ```
+The master table is updated after every run with d2 (a rerun UPC replaces its row). Only that step, from what is
+already extracted: `python run_intervals.py` (or `--upc N/02007/11001/HR`). Switch off: `export NSV_MASTER_INTERVALS=0`.
 
 ### How headers are checked
 Every sheet's headers are compared with `schemas/<dN>/<workbook>/<sheet>.csv`, strictest first:
